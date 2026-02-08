@@ -15,9 +15,12 @@ mod alerts;
 mod app;
 mod config;
 pub mod constants;
+#[allow(dead_code)]
+mod diagnostics;
 mod metrics;
 mod models;
 mod monitor;
+mod store;
 mod ui;
 mod utils;
 

@@ -60,6 +60,9 @@ tiny_http = "0.12"
 # Internationalization (i18n)
 rust-i18n = "3"
 
+# Event store (persistent timeline / diagnostics)
+rusqlite = { version = "0.31", features = ["bundled"] }
+
 [profile.release]
 opt-level = 3
 lto = true

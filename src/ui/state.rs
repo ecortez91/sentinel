@@ -233,6 +233,14 @@ pub struct AppState {
 
     // ── Language ────────────────────────────────────────────
     pub current_lang: String,
+
+    // ── Command palette ───────────────────────────────────
+    pub show_command_palette: bool,
+    pub command_input: String,
+    pub command_cursor_pos: usize,
+    /// Result from the last command execution.
+    pub command_result: Option<String>,
+    pub command_result_scroll: usize,
 }
 
 /// Apply sort direction to an ordering.
@@ -301,6 +309,12 @@ impl AppState {
             container_scroll: 0,
             // Language
             current_lang: rust_i18n::locale().to_string(),
+            // Command palette
+            show_command_palette: false,
+            command_input: String::new(),
+            command_cursor_pos: 0,
+            command_result: None,
+            command_result_scroll: 0,
         }
     }
 

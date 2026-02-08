@@ -1,4 +1,5 @@
-//! Popup overlays: process detail, help, signal picker, renice dialog.
+//! Popup overlays: process detail, help, signal picker, renice dialog,
+//! command palette, command result.
 
 use ratatui::{
     layout::Rect,
@@ -208,6 +209,7 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
         help_entry("+/- (Dashboard)", "Zoom history charts", t.accent),
         help_entry("f (Dashboard)", "Focus/expand widget", t.accent),
         help_entry("a", "Ask AI about process", t.ai_accent),
+        help_entry(":", "Command palette", t.accent_secondary),
         help_entry("Esc", "Clear filter / close help", t.accent),
         help_entry("q", "Quit", t.accent),
         Line::raw(""),
@@ -400,4 +402,124 @@ pub fn render_renice_dialog(frame: &mut Frame, area: Rect, state: &AppState) {
     ];
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+pub fn render_command_palette(frame: &mut Frame, area: Rect, state: &AppState) {
+    let t = &state.theme;
+    // Render at the bottom of the screen, like a vim command line
+    let width = area.width.min(80);
+    let height = 3;
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + area.height.saturating_sub(height + 1);
+    let popup_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(Span::styled(
+            " Command (type 'help' for list) ",
+            t.header_style(),
+        ))
+        .borders(Borders::ALL)
+        .border_style(t.border_highlight_style());
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let input_line = Line::from(vec![
+        Span::styled(
+            ":",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            state.command_input.clone(),
+            Style::default().fg(t.text_primary),
+        ),
+        Span::styled("█", Style::default().fg(t.accent)),
+    ]);
+
+    frame.render_widget(Paragraph::new(vec![input_line]), inner);
+}
+
+pub fn render_command_result(frame: &mut Frame, area: Rect, state: &AppState) {
+    let t = &state.theme;
+    let Some(ref result) = state.command_result else {
+        return;
+    };
+
+    let popup_width = 76.min(area.width.saturating_sub(4));
+    let popup_height = 30.min(area.height.saturating_sub(4));
+    let popup_area = centered_rect(popup_width, popup_height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(Span::styled(
+            " Diagnostic Result (Esc to close, ↑↓ scroll) ",
+            t.header_style(),
+        ))
+        .borders(Borders::ALL)
+        .border_style(t.border_highlight_style());
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let wrap_width = inner.width as usize;
+    let mut lines: Vec<Line> = Vec::new();
+
+    for raw_line in result.lines() {
+        if raw_line.starts_with("# ") {
+            // Section header
+            lines.push(Line::from(Span::styled(
+                raw_line.to_string(),
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            )));
+        } else if raw_line.starts_with("✖") {
+            lines.push(Line::from(Span::styled(
+                raw_line.to_string(),
+                Style::default().fg(t.danger),
+            )));
+        } else if raw_line.starts_with("⚠") {
+            lines.push(Line::from(Span::styled(
+                raw_line.to_string(),
+                Style::default().fg(t.warning),
+            )));
+        } else if raw_line.starts_with("ℹ") {
+            lines.push(Line::from(Span::styled(
+                raw_line.to_string(),
+                Style::default().fg(t.info),
+            )));
+        } else if raw_line.starts_with("  →") {
+            lines.push(Line::from(Span::styled(
+                raw_line.to_string(),
+                Style::default().fg(t.accent_secondary),
+            )));
+        } else if raw_line.len() > wrap_width {
+            // Wrap long lines
+            for wrapped in textwrap::wrap(raw_line, wrap_width) {
+                lines.push(Line::from(Span::styled(
+                    wrapped.to_string(),
+                    Style::default().fg(t.text_primary),
+                )));
+            }
+        } else {
+            lines.push(Line::from(Span::styled(
+                raw_line.to_string(),
+                Style::default().fg(t.text_primary),
+            )));
+        }
+    }
+
+    let visible_height = inner.height as usize;
+    let total_lines = lines.len();
+    let scroll = state
+        .command_result_scroll
+        .min(total_lines.saturating_sub(visible_height));
+
+    let visible_lines: Vec<Line> = lines
+        .into_iter()
+        .skip(scroll)
+        .take(visible_height)
+        .collect();
+
+    frame.render_widget(Paragraph::new(visible_lines), inner);
+    render_scrollbar(frame, inner, total_lines, scroll);
 }

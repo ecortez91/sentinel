@@ -63,4 +63,12 @@ pub fn render(frame: &mut Frame, state: &AppState) {
     if state.show_help {
         overlays::render_help_overlay(frame, size, state);
     }
+
+    if state.command_result.is_some() {
+        overlays::render_command_result(frame, size, state);
+    }
+
+    if state.show_command_palette {
+        overlays::render_command_palette(frame, size, state);
+    }
 }

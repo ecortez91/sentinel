@@ -24,7 +24,9 @@ use crate::ai::{ClaudeClient, ContextBuilder};
 use crate::alerts::AlertDetector;
 use crate::config::Config;
 use crate::constants::*;
+use crate::diagnostics::DiagnosticEngine;
 use crate::monitor::{ContainerInfo, DockerMonitor, SystemCollector};
+use crate::store::EventStore;
 use crate::ui::{self, AppState, Tab};
 
 /// System prompt for auto-analysis (Dashboard insight card).
@@ -99,6 +101,11 @@ pub struct App {
 
     // Prometheus
     shared_metrics: Option<crate::metrics::SharedMetrics>,
+
+    // Event store (persistent timeline)
+    event_store: Option<EventStore>,
+    /// Ticks between network socket scans (every ~10s at 1s tick = 10).
+    net_scan_interval: u64,
 
     // Local loop state
     filtering: bool,
@@ -184,6 +191,21 @@ impl App {
         let insight_interval = Duration::from_secs(config.auto_analysis_interval_secs);
         let auto_analysis_enabled = config.auto_analysis_interval_secs > 0;
 
+        // Initialize event store (persistent timeline)
+        let event_store = match EventStore::open(Some(&EventStore::default_path())) {
+            Ok(store) => {
+                eprintln!(
+                    "Event store: {}",
+                    EventStore::default_path().display()
+                );
+                Some(store)
+            }
+            Err(e) => {
+                eprintln!("Warning: could not open event store: {}", e);
+                None
+            }
+        };
+
         Ok(Self {
             state,
             collector,
@@ -196,6 +218,8 @@ impl App {
             insight_rx,
             docker_rx,
             shared_metrics,
+            event_store,
+            net_scan_interval: 10, // scan network sockets every ~10 ticks
             filtering: false,
             ai_typing: false,
             last_insight_time: None,
@@ -310,21 +334,40 @@ impl App {
 
     // ── AI dispatch (deduplicated) ───────────────────────────────
 
+    /// Build diagnostic context from the event store for AI enrichment.
+    fn build_diagnostic_context(&self) -> String {
+        if let (Some(system), Some(ref store)) = (self.state.system.as_ref(), &self.event_store) {
+            DiagnosticEngine::full_context_report(
+                system,
+                &self.state.processes,
+                &self.state.alerts,
+                store,
+            )
+        } else {
+            String::new()
+        }
+    }
+
     /// Dispatch an AI streaming request on the chat channel.
     ///
-    /// Builds context from live system data, prepares the system prompt,
-    /// and spawns an async task to stream the response.
+    /// Builds context from live system data + diagnostics, prepares the system
+    /// prompt, and spawns an async task to stream the response.
     fn dispatch_ai_chat(&self) {
         let context = ContextBuilder::build(
             self.state.system.as_ref(),
             &self.state.processes,
             &self.state.alerts,
         );
+        let diagnostic_context = self.build_diagnostic_context();
         let system_prompt = build_system_prompt(self.state.system.as_ref());
-        let full_system = format!(
-            "{}{}{}",
-            system_prompt, AI_CONTEXT_SEPARATOR, context
-        );
+        let full_system = if diagnostic_context.is_empty() {
+            format!("{}{}{}", system_prompt, AI_CONTEXT_SEPARATOR, context)
+        } else {
+            format!(
+                "{}{}{}\n\n--- DIAGNOSTIC FINDINGS ---\n\n{}",
+                system_prompt, AI_CONTEXT_SEPARATOR, context, diagnostic_context
+            )
+        };
         let messages = self.state.ai_conversation.to_api_messages();
         let tx = self.ai_tx.clone();
 
@@ -344,10 +387,15 @@ impl App {
             &self.state.processes,
             &self.state.alerts,
         );
-        let full_system = format!(
-            "{}{}{}",
-            AUTO_ANALYSIS_PROMPT, AI_CONTEXT_SEPARATOR_SHORT, context
-        );
+        let diagnostic_context = self.build_diagnostic_context();
+        let full_system = if diagnostic_context.is_empty() {
+            format!("{}{}{}", AUTO_ANALYSIS_PROMPT, AI_CONTEXT_SEPARATOR_SHORT, context)
+        } else {
+            format!(
+                "{}{}{}\n\n--- DIAGNOSTIC FINDINGS ---\n\n{}",
+                AUTO_ANALYSIS_PROMPT, AI_CONTEXT_SEPARATOR_SHORT, context, diagnostic_context
+            )
+        };
         let messages = vec![serde_json::json!({
             "role": "user",
             "content": "Analyze my system now. Give me a quick health check."
@@ -482,6 +530,16 @@ impl App {
 
     /// Handle a key event. Returns `true` if the app should quit.
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        // Command palette mode
+        if self.state.show_command_palette {
+            return self.handle_key_command_palette(key);
+        }
+
+        // Command result popup (scrollable)
+        if self.state.command_result.is_some() {
+            return self.handle_key_command_result(key);
+        }
+
         // Process detail popup mode
         if self.state.show_process_detail {
             return self.handle_key_detail_popup(key);
@@ -859,6 +917,13 @@ impl App {
                 }
             }
 
+            // Command palette
+            KeyCode::Char(':') if self.state.active_tab != Tab::AskAi => {
+                self.state.show_command_palette = true;
+                self.state.command_input.clear();
+                self.state.command_cursor_pos = 0;
+            }
+
             // Help
             KeyCode::Char('?') => self.state.show_help = !self.state.show_help,
             KeyCode::Esc => {
@@ -874,6 +939,249 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    // ── Command palette ─────────────────────────────────────────
+
+    fn handle_key_command_palette(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.state.show_command_palette = false;
+                self.state.command_input.clear();
+                self.state.command_cursor_pos = 0;
+            }
+            KeyCode::Enter => {
+                let input = self.state.command_input.trim().to_string();
+                self.state.show_command_palette = false;
+                self.state.command_input.clear();
+                self.state.command_cursor_pos = 0;
+                if !input.is_empty() {
+                    self.execute_command(&input);
+                }
+            }
+            KeyCode::Backspace => {
+                if self.state.command_cursor_pos > 0 {
+                    let prev = self.state.command_input[..self.state.command_cursor_pos]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    self.state.command_input.remove(prev);
+                    self.state.command_cursor_pos = prev;
+                }
+                if self.state.command_input.is_empty() {
+                    self.state.show_command_palette = false;
+                }
+            }
+            KeyCode::Left => {
+                if self.state.command_cursor_pos > 0 {
+                    self.state.command_cursor_pos = self.state.command_input
+                        [..self.state.command_cursor_pos]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                }
+            }
+            KeyCode::Right => {
+                if self.state.command_cursor_pos < self.state.command_input.len() {
+                    self.state.command_cursor_pos = self.state.command_input
+                        [self.state.command_cursor_pos..]
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| self.state.command_cursor_pos + i)
+                        .unwrap_or(self.state.command_input.len());
+                }
+            }
+            KeyCode::Char(c) => {
+                self.state.command_input.insert(self.state.command_cursor_pos, c);
+                self.state.command_cursor_pos += c.len_utf8();
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key_command_result(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+                self.state.command_result = None;
+                self.state.command_result_scroll = 0;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.state.command_result_scroll > 0 {
+                    self.state.command_result_scroll -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.state.command_result_scroll += 1;
+            }
+            KeyCode::PageUp => {
+                self.state.command_result_scroll =
+                    self.state.command_result_scroll.saturating_sub(PAGE_SIZE);
+            }
+            KeyCode::PageDown => {
+                self.state.command_result_scroll += PAGE_SIZE;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Parse and execute a command palette command.
+    fn execute_command(&mut self, input: &str) {
+        let parts: Vec<&str> = input.split_whitespace().collect();
+        if parts.is_empty() {
+            return;
+        }
+
+        let cmd = parts[0].to_lowercase();
+        let result = match cmd.as_str() {
+            // System diagnostics
+            "why" | "slow" | "why-slow" | "contention" => {
+                if let Some(system) = &self.state.system {
+                    DiagnosticEngine::resource_contention(system, &self.state.processes).to_text()
+                } else {
+                    "No system data available yet.".to_string()
+                }
+            }
+
+            // Timeline / absence report
+            "timeline" | "history" | "what-happened" | "away" => {
+                let minutes = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(30);
+                if let Some(ref store) = self.event_store {
+                    DiagnosticEngine::timeline_report(store, minutes).to_text()
+                } else {
+                    "Event store not available.".to_string()
+                }
+            }
+
+            // Port investigation
+            "port" => {
+                if let Some(port) = parts.get(1).and_then(|s| s.parse::<u16>().ok()) {
+                    if let Some(ref store) = self.event_store {
+                        DiagnosticEngine::port_diagnosis(store, port).to_text()
+                    } else {
+                        "Event store not available.".to_string()
+                    }
+                } else {
+                    "Usage: port <number>\nExample: port 8080".to_string()
+                }
+            }
+
+            // Process investigation
+            "pid" | "process" => {
+                if let Some(pid) = parts.get(1).and_then(|s| s.parse::<u32>().ok()) {
+                    let current = self.state.processes.iter().find(|p| p.pid == pid);
+                    if let Some(ref store) = self.event_store {
+                        DiagnosticEngine::process_analysis(store, pid, current).to_text()
+                    } else {
+                        "Event store not available.".to_string()
+                    }
+                } else {
+                    "Usage: pid <number>\nExample: pid 1234".to_string()
+                }
+            }
+
+            // Anomaly scan
+            "anomaly" | "anomalies" | "scan" => {
+                let minutes = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(30);
+                if let Some(ref store) = self.event_store {
+                    DiagnosticEngine::anomaly_scan(store, minutes).to_text()
+                } else {
+                    "Event store not available.".to_string()
+                }
+            }
+
+            // Disk analysis
+            "disk" | "disks" | "storage" => {
+                if let Some(system) = &self.state.system {
+                    DiagnosticEngine::disk_analysis(system).to_text()
+                } else {
+                    "No system data available yet.".to_string()
+                }
+            }
+
+            // Listeners
+            "listeners" | "ports" | "listen" => {
+                if let Some(ref store) = self.event_store {
+                    match store.query_current_listeners() {
+                        Ok(listeners) if listeners.is_empty() => {
+                            "No active listeners found.".to_string()
+                        }
+                        Ok(listeners) => {
+                            let mut lines = vec![format!("# Active Listeners ({} total)", listeners.len())];
+                            for s in &listeners {
+                                let who = match (&s.pid, &s.name) {
+                                    (Some(pid), Some(name)) => format!("{} (PID {})", name, pid),
+                                    (Some(pid), None) => format!("PID {}", pid),
+                                    _ => "unknown".to_string(),
+                                };
+                                lines.push(format!(
+                                    "  {} {}:{} ← {}",
+                                    s.protocol, s.local_addr, s.local_port, who
+                                ));
+                            }
+                            lines.join("\n")
+                        }
+                        Err(e) => format!("Error querying listeners: {}", e),
+                    }
+                } else {
+                    "Event store not available.".to_string()
+                }
+            }
+
+            // Event store stats
+            "stats" | "db" | "store" => {
+                if let Some(ref store) = self.event_store {
+                    match store.table_stats() {
+                        Ok(stats) => {
+                            let size = store.db_size_bytes();
+                            let mut lines = vec![
+                                "# Event Store Statistics".to_string(),
+                                format!("  Database size: {}", crate::models::format_bytes(size)),
+                            ];
+                            for (table, count) in &stats {
+                                lines.push(format!("  {}: {} rows", table, count));
+                            }
+                            lines.join("\n")
+                        }
+                        Err(e) => format!("Error: {}", e),
+                    }
+                } else {
+                    "Event store not available.".to_string()
+                }
+            }
+
+            // Help
+            "help" | "?" | "commands" => {
+                "# Command Palette\n\n\
+                 System:\n\
+                 \x20 why / slow         - Resource contention analysis\n\
+                 \x20 disk               - Disk usage analysis\n\
+                 \x20 anomaly [minutes]  - Anomaly scan (default: 30 min)\n\
+                 \x20 timeline [minutes] - What happened recently\n\n\
+                 Network:\n\
+                 \x20 port <number>      - Who's using this port?\n\
+                 \x20 listeners          - All active port listeners\n\n\
+                 Process:\n\
+                 \x20 pid <number>       - Deep process analysis\n\n\
+                 Meta:\n\
+                 \x20 stats              - Event store statistics\n\
+                 \x20 help               - This help message"
+                    .to_string()
+            }
+
+            _ => {
+                format!(
+                    "Unknown command: '{}'\nType 'help' for available commands.",
+                    input
+                )
+            }
+        };
+
+        self.state.command_result = Some(result);
+        self.state.command_result_scroll = 0;
     }
 
     // ── Contextual AI query ──────────────────────────────────────
@@ -920,6 +1228,44 @@ impl App {
         if should_refresh {
             let (system, processes) = self.collector.collect();
             let new_alerts = self.detector.analyze(&system, &processes);
+
+            // Record to event store
+            if let Some(ref mut store) = self.event_store {
+                // System snapshot
+                let _ = store.insert_system_snapshot(&system);
+
+                // Process snapshots (top N)
+                let _ = store.insert_process_snapshots(&processes);
+
+                // Detect process start/exit events
+                let _ = store.detect_process_lifecycle(&processes);
+
+                // Record alerts as events
+                for alert in &new_alerts {
+                    let detail = serde_json::json!({
+                        "category": alert.category.to_string(),
+                        "message": alert.message,
+                        "value": alert.value,
+                        "threshold": alert.threshold,
+                    })
+                    .to_string();
+                    let severity = alert.severity.to_string().to_lowercase();
+                    let _ = store.insert_event(
+                        crate::store::EventKind::Alert,
+                        Some(alert.pid),
+                        Some(&alert.process_name),
+                        Some(&detail),
+                        Some(&severity),
+                    );
+                }
+
+                // Network socket scan (less frequent — every net_scan_interval ticks)
+                if self.state.tick_count % self.net_scan_interval == 0 {
+                    let _ = store.insert_network_sockets();
+                    let _ = store.detect_port_changes();
+                }
+            }
+
             self.state.update(system, processes, new_alerts);
 
             // Update Prometheus metrics snapshot
