@@ -3,10 +3,72 @@ use std::collections::VecDeque;
 
 use crate::ai::Conversation;
 use crate::constants::*;
+use crate::diagnostics::SuggestedAction;
 use crate::models::{Alert, ProcessInfo, SystemSnapshot};
 use crate::monitor::ContainerInfo;
 
 use super::theme::Theme;
+
+/// Result from a command palette execution — holds rendered text + any
+/// executable actions extracted from the diagnostic report.
+#[derive(Debug, Clone)]
+pub struct CommandResult {
+    /// The rendered text output (for display).
+    pub text: String,
+    /// Extracted actions from the diagnostic findings, with labels.
+    pub actions: Vec<(String, SuggestedAction)>,
+}
+
+impl CommandResult {
+    /// Create a plain text result with no actions.
+    pub fn text_only(text: String) -> Self {
+        Self {
+            text,
+            actions: Vec::new(),
+        }
+    }
+
+    /// Create from a DiagnosticReport, extracting actions.
+    pub fn from_report(report: &crate::diagnostics::DiagnosticReport) -> Self {
+        let text = report.to_text();
+        let actions: Vec<(String, SuggestedAction)> = report
+            .findings
+            .iter()
+            .filter_map(|f| {
+                f.action.as_ref().map(|a| {
+                    let label = match a {
+                        SuggestedAction::KillProcess { pid, name, signal } => {
+                            format!("Kill PID {} ({}) with {}", pid, name, signal)
+                        }
+                        SuggestedAction::ReniceProcess { pid, name, nice } => {
+                            format!("Set nice {} for PID {} ({})", nice, pid, name)
+                        }
+                        SuggestedAction::FreePort { port, pid, name } => {
+                            format!("Kill PID {} ({}) to free port {}", pid, name, port)
+                        }
+                        SuggestedAction::CleanDirectory { path, size_bytes } => {
+                            format!(
+                                "Clean {} ({:.1} GB)",
+                                path,
+                                *size_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+                            )
+                        }
+                        SuggestedAction::Info(msg) => msg.clone(),
+                    };
+                    (label, a.clone())
+                })
+            })
+            .collect();
+        Self { text, actions }
+    }
+
+    /// Whether this result has executable (non-Info) actions.
+    pub fn has_executable_actions(&self) -> bool {
+        self.actions
+            .iter()
+            .any(|(_, a)| !matches!(a, SuggestedAction::Info(_)))
+    }
+}
 
 /// Common Unix signals for the signal picker popup.
 pub const SIGNAL_LIST: &[(i32, &str, &str)] = &[
@@ -239,8 +301,12 @@ pub struct AppState {
     pub command_input: String,
     pub command_cursor_pos: usize,
     /// Result from the last command execution.
-    pub command_result: Option<String>,
+    pub command_result: Option<CommandResult>,
     pub command_result_scroll: usize,
+    /// Currently selected action index within command_result.actions.
+    pub command_result_selected_action: usize,
+    /// Whether we're showing a confirmation dialog for the selected action.
+    pub show_action_confirm: bool,
 }
 
 /// Apply sort direction to an ordering.
@@ -315,6 +381,8 @@ impl AppState {
             command_cursor_pos: 0,
             command_result: None,
             command_result_scroll: 0,
+            command_result_selected_action: 0,
+            show_action_confirm: false,
         }
     }
 
@@ -1512,5 +1580,119 @@ mod tests {
         let initial = s.theme.name.clone();
         s.cycle_theme();
         assert_ne!(s.theme.name, initial);
+    }
+
+    // ── CommandResult ──────────────────────────────────────────────
+
+    #[test]
+    fn command_result_text_only_has_no_actions() {
+        let cr = CommandResult::text_only("hello".to_string());
+        assert_eq!(cr.text, "hello");
+        assert!(cr.actions.is_empty());
+        assert!(!cr.has_executable_actions());
+    }
+
+    #[test]
+    fn command_result_from_report_extracts_actions() {
+        use crate::diagnostics::*;
+        let mut report = DiagnosticReport::new("Test Report");
+        report.findings.push(Finding {
+            severity: FindingSeverity::Warning,
+            title: "High CPU".to_string(),
+            detail: "PID 42".to_string(),
+            action: Some(SuggestedAction::KillProcess {
+                pid: 42,
+                name: "hog".to_string(),
+                signal: "SIGTERM",
+            }),
+        });
+        report.findings.push(Finding {
+            severity: FindingSeverity::Info,
+            title: "Info".to_string(),
+            detail: "".to_string(),
+            action: Some(SuggestedAction::Info("just info".to_string())),
+        });
+        report.findings.push(Finding {
+            severity: FindingSeverity::Info,
+            title: "No action".to_string(),
+            detail: "".to_string(),
+            action: None,
+        });
+
+        let cr = CommandResult::from_report(&report);
+        assert_eq!(cr.actions.len(), 2); // KillProcess + Info
+        assert!(cr.has_executable_actions()); // KillProcess is executable
+        assert!(cr.actions[0].0.contains("Kill PID 42"));
+        assert!(cr.actions[1].0.contains("just info"));
+    }
+
+    #[test]
+    fn command_result_has_executable_actions_info_only() {
+        let cr = CommandResult {
+            text: "test".to_string(),
+            actions: vec![("info".to_string(), SuggestedAction::Info("x".to_string()))],
+        };
+        assert!(!cr.has_executable_actions());
+    }
+
+    #[test]
+    fn command_result_from_report_renice_action() {
+        use crate::diagnostics::*;
+        let mut report = DiagnosticReport::new("Test");
+        report.findings.push(Finding {
+            severity: FindingSeverity::Warning,
+            title: "High CPU".to_string(),
+            detail: "".to_string(),
+            action: Some(SuggestedAction::ReniceProcess {
+                pid: 99,
+                name: "compile".to_string(),
+                nice: 10,
+            }),
+        });
+
+        let cr = CommandResult::from_report(&report);
+        assert!(cr.has_executable_actions());
+        assert!(cr.actions[0].0.contains("nice 10"));
+        assert!(cr.actions[0].0.contains("PID 99"));
+    }
+
+    #[test]
+    fn command_result_from_report_free_port_action() {
+        use crate::diagnostics::*;
+        let mut report = DiagnosticReport::new("Test");
+        report.findings.push(Finding {
+            severity: FindingSeverity::Info,
+            title: "Port bound".to_string(),
+            detail: "".to_string(),
+            action: Some(SuggestedAction::FreePort {
+                port: 8080,
+                pid: 55,
+                name: "node".to_string(),
+            }),
+        });
+
+        let cr = CommandResult::from_report(&report);
+        assert!(cr.has_executable_actions());
+        assert!(cr.actions[0].0.contains("port 8080"));
+    }
+
+    #[test]
+    fn command_result_from_report_clean_dir_action() {
+        use crate::diagnostics::*;
+        let mut report = DiagnosticReport::new("Test");
+        report.findings.push(Finding {
+            severity: FindingSeverity::Info,
+            title: "Cache".to_string(),
+            detail: "".to_string(),
+            action: Some(SuggestedAction::CleanDirectory {
+                path: "/tmp/cache".to_string(),
+                size_bytes: 2_000_000_000,
+            }),
+        });
+
+        let cr = CommandResult::from_report(&report);
+        assert!(cr.has_executable_actions());
+        assert!(cr.actions[0].0.contains("/tmp/cache"));
+        assert!(cr.actions[0].0.contains("GB"));
     }
 }

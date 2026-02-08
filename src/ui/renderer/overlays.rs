@@ -170,7 +170,7 @@ fn detail_line<'a>(label: &str, value: &str, t: &crate::ui::theme::Theme) -> Lin
 pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
     let t = &state.theme;
     let popup_width = 55;
-    let popup_height = 38;
+    let popup_height = 40;
     let popup_area = centered_rect(popup_width, popup_height, area);
 
     frame.render_widget(Clear, popup_area);
@@ -210,6 +210,12 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
         help_entry("f (Dashboard)", "Focus/expand widget", t.accent),
         help_entry("a", "Ask AI about process", t.ai_accent),
         help_entry(":", "Command palette", t.accent_secondary),
+        help_entry("  Tab (in results)", "Cycle actions", t.accent_secondary),
+        help_entry(
+            "  1-9 (in results)",
+            "Quick-select action",
+            t.accent_secondary,
+        ),
         help_entry("Esc", "Clear filter / close help", t.accent),
         help_entry("q", "Quit", t.accent),
         Line::raw(""),
@@ -452,11 +458,15 @@ pub fn render_command_result(frame: &mut Frame, area: Rect, state: &AppState) {
 
     frame.render_widget(Clear, popup_area);
 
+    let has_actions = result.has_executable_actions();
+    let title = if has_actions {
+        " Diagnostic Result (Tab: select action, 1-9: quick select, Esc: close) "
+    } else {
+        " Diagnostic Result (Esc to close, Up/Down scroll) "
+    };
+
     let block = Block::default()
-        .title(Span::styled(
-            " Diagnostic Result (Esc to close, ↑↓ scroll) ",
-            t.header_style(),
-        ))
+        .title(Span::styled(title, t.header_style()))
         .borders(Borders::ALL)
         .border_style(t.border_highlight_style());
     let inner = block.inner(popup_area);
@@ -465,35 +475,109 @@ pub fn render_command_result(frame: &mut Frame, area: Rect, state: &AppState) {
     let wrap_width = inner.width as usize;
     let mut lines: Vec<Line> = Vec::new();
 
-    for raw_line in result.lines() {
+    // Build a map from action arrow lines to their action index
+    // We number only executable (non-Info) actions
+    let mut executable_index = 0usize;
+    let action_numbers: Vec<Option<usize>> = result
+        .actions
+        .iter()
+        .map(|(_, a)| {
+            if matches!(a, crate::diagnostics::SuggestedAction::Info(_)) {
+                None
+            } else {
+                executable_index += 1;
+                Some(executable_index)
+            }
+        })
+        .collect();
+
+    // Track which action arrow lines map to which action index
+    let mut action_line_map: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::new();
+    let mut action_arrow_count = 0usize;
+
+    for raw_line in result.text.lines() {
+        let line_idx = lines.len();
+
         if raw_line.starts_with("# ") {
-            // Section header
             lines.push(Line::from(Span::styled(
                 raw_line.to_string(),
                 Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
             )));
-        } else if raw_line.starts_with("✖") {
+        } else if raw_line.starts_with('\u{2716}') {
+            // ✖
             lines.push(Line::from(Span::styled(
                 raw_line.to_string(),
                 Style::default().fg(t.danger),
             )));
-        } else if raw_line.starts_with("⚠") {
+        } else if raw_line.starts_with('\u{26A0}') {
+            // ⚠
             lines.push(Line::from(Span::styled(
                 raw_line.to_string(),
                 Style::default().fg(t.warning),
             )));
-        } else if raw_line.starts_with("ℹ") {
+        } else if raw_line.starts_with('\u{2139}') {
+            // ℹ
             lines.push(Line::from(Span::styled(
                 raw_line.to_string(),
                 Style::default().fg(t.info),
             )));
-        } else if raw_line.starts_with("  →") {
-            lines.push(Line::from(Span::styled(
-                raw_line.to_string(),
-                Style::default().fg(t.accent_secondary),
-            )));
+        } else if raw_line.contains('\u{2192}') {
+            // → action line
+            // Determine which action this is
+            let action_idx = action_arrow_count;
+            action_arrow_count += 1;
+
+            if action_idx < result.actions.len() {
+                action_line_map.insert(line_idx, action_idx);
+
+                let is_selected = action_idx == state.command_result_selected_action && has_actions;
+                let num = action_numbers.get(action_idx).copied().flatten();
+
+                let prefix = if let Some(n) = num {
+                    format!("[{}] ", n)
+                } else {
+                    String::new()
+                };
+
+                if is_selected {
+                    // Highlighted action
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            prefix,
+                            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            raw_line.to_string(),
+                            Style::default()
+                                .fg(t.accent_secondary)
+                                .bg(t.table_row_selected_bg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                } else if num.is_some() {
+                    // Numbered but not selected
+                    lines.push(Line::from(vec![
+                        Span::styled(prefix, Style::default().fg(t.text_muted)),
+                        Span::styled(
+                            raw_line.to_string(),
+                            Style::default().fg(t.accent_secondary),
+                        ),
+                    ]));
+                } else {
+                    // Info action (not executable)
+                    lines.push(Line::from(Span::styled(
+                        raw_line.to_string(),
+                        Style::default().fg(t.text_dim),
+                    )));
+                }
+            } else {
+                lines.push(Line::from(Span::styled(
+                    raw_line.to_string(),
+                    Style::default().fg(t.accent_secondary),
+                )));
+            }
         } else if raw_line.len() > wrap_width {
-            // Wrap long lines
             for wrapped in textwrap::wrap(raw_line, wrap_width) {
                 lines.push(Line::from(Span::styled(
                     wrapped.to_string(),
@@ -506,6 +590,28 @@ pub fn render_command_result(frame: &mut Frame, area: Rect, state: &AppState) {
                 Style::default().fg(t.text_primary),
             )));
         }
+    }
+
+    // Add action hint at the bottom if there are executable actions
+    if has_actions {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Tab",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" cycle actions  ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                "Enter",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" execute  ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                "1-9",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" quick select", Style::default().fg(t.text_dim)),
+        ]));
     }
 
     let visible_height = inner.height as usize;
@@ -522,4 +628,97 @@ pub fn render_command_result(frame: &mut Frame, area: Rect, state: &AppState) {
 
     frame.render_widget(Paragraph::new(visible_lines), inner);
     render_scrollbar(frame, inner, total_lines, scroll);
+
+    // Render confirmation dialog on top if active
+    if state.show_action_confirm {
+        render_action_confirm(frame, area, state);
+    }
+}
+
+/// Render a confirmation dialog for executing a diagnostic action.
+fn render_action_confirm(frame: &mut Frame, area: Rect, state: &AppState) {
+    let t = &state.theme;
+    let Some(ref cr) = state.command_result else {
+        return;
+    };
+    let sel = state.command_result_selected_action;
+    if sel >= cr.actions.len() {
+        return;
+    }
+    let (label, action) = &cr.actions[sel];
+
+    let (title_text, danger_level) = match action {
+        crate::diagnostics::SuggestedAction::KillProcess { signal, .. } => {
+            let is_kill = *signal == "SIGKILL";
+            (
+                format!(
+                    " Confirm: {} ",
+                    if is_kill {
+                        "FORCE KILL"
+                    } else {
+                        "Kill Process"
+                    }
+                ),
+                if is_kill { 2 } else { 1 },
+            )
+        }
+        crate::diagnostics::SuggestedAction::FreePort { .. } => {
+            (" Confirm: Free Port ".to_string(), 1)
+        }
+        crate::diagnostics::SuggestedAction::ReniceProcess { .. } => {
+            (" Confirm: Renice Process ".to_string(), 0)
+        }
+        crate::diagnostics::SuggestedAction::CleanDirectory { .. } => {
+            (" Confirm: Clean Directory ".to_string(), 2)
+        }
+        crate::diagnostics::SuggestedAction::Info(_) => return,
+    };
+
+    let border_color = match danger_level {
+        2 => t.danger,
+        1 => t.warning,
+        _ => t.accent,
+    };
+
+    let popup_width = 60.min(area.width.saturating_sub(4));
+    let popup_height = 8;
+    let popup_area = centered_rect(popup_width, popup_height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(Span::styled(
+            title_text,
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let lines = vec![
+        Line::raw(""),
+        Line::from(Span::styled(
+            format!("  {}", label),
+            Style::default().fg(t.text_primary),
+        )),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  Are you sure? ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                "[y]",
+                Style::default().fg(t.success).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Yes  ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                "[n]",
+                Style::default().fg(t.danger).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" No", Style::default().fg(t.text_dim)),
+        ]),
+    ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }

@@ -59,7 +59,7 @@ pub struct DiagnosticReport {
 }
 
 impl DiagnosticReport {
-    fn new(title: &str) -> Self {
+    pub fn new(title: &str) -> Self {
         Self {
             title: title.to_string(),
             findings: Vec::new(),

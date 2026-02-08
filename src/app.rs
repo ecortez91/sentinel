@@ -24,7 +24,8 @@ use crate::ai::{ClaudeClient, ContextBuilder};
 use crate::alerts::AlertDetector;
 use crate::config::Config;
 use crate::constants::*;
-use crate::diagnostics::DiagnosticEngine;
+use crate::diagnostics::{DiagnosticEngine, SuggestedAction};
+use crate::ui::CommandResult;
 use crate::monitor::{ContainerInfo, DockerMonitor, SystemCollector};
 use crate::store::EventStore;
 use crate::ui::{self, AppState, Tab};
@@ -1003,10 +1004,16 @@ impl App {
     }
 
     fn handle_key_command_result(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        // Confirmation dialog takes priority
+        if self.state.show_action_confirm {
+            return self.handle_key_action_confirm(key);
+        }
+
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 self.state.command_result = None;
                 self.state.command_result_scroll = 0;
+                self.state.command_result_selected_action = 0;
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.state.command_result_scroll > 0 {
@@ -1023,9 +1030,178 @@ impl App {
             KeyCode::PageDown => {
                 self.state.command_result_scroll += PAGE_SIZE;
             }
+            // Tab / Shift+Tab to cycle through actions
+            KeyCode::Tab => {
+                if let Some(ref cr) = self.state.command_result {
+                    let executable: Vec<usize> = cr
+                        .actions
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, a))| !matches!(a, SuggestedAction::Info(_)))
+                        .map(|(i, _)| i)
+                        .collect();
+                    if !executable.is_empty() {
+                        let cur = self.state.command_result_selected_action;
+                        let next_pos = executable
+                            .iter()
+                            .position(|&i| i > cur)
+                            .unwrap_or(0);
+                        self.state.command_result_selected_action = executable[next_pos];
+                    }
+                }
+            }
+            KeyCode::BackTab => {
+                if let Some(ref cr) = self.state.command_result {
+                    let executable: Vec<usize> = cr
+                        .actions
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, a))| !matches!(a, SuggestedAction::Info(_)))
+                        .map(|(i, _)| i)
+                        .collect();
+                    if !executable.is_empty() {
+                        let cur = self.state.command_result_selected_action;
+                        let prev_pos = executable
+                            .iter()
+                            .rposition(|&i| i < cur)
+                            .unwrap_or(executable.len() - 1);
+                        self.state.command_result_selected_action = executable[prev_pos];
+                    }
+                }
+            }
+            // Number keys 1-9 to select action directly
+            KeyCode::Char(c @ '1'..='9') => {
+                let idx = (c as usize) - ('1' as usize);
+                if let Some(ref cr) = self.state.command_result {
+                    // Map to executable actions only
+                    let executable: Vec<usize> = cr
+                        .actions
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, a))| !matches!(a, SuggestedAction::Info(_)))
+                        .map(|(i, _)| i)
+                        .collect();
+                    if idx < executable.len() {
+                        self.state.command_result_selected_action = executable[idx];
+                        self.state.show_action_confirm = true;
+                    }
+                }
+            }
+            // Enter triggers confirmation for selected action
+            KeyCode::Enter => {
+                if let Some(ref cr) = self.state.command_result {
+                    let sel = self.state.command_result_selected_action;
+                    if sel < cr.actions.len() {
+                        let is_executable =
+                            !matches!(cr.actions[sel].1, SuggestedAction::Info(_));
+                        if is_executable {
+                            self.state.show_action_confirm = true;
+                        }
+                    } else {
+                        // No action selected — close
+                        self.state.command_result = None;
+                        self.state.command_result_scroll = 0;
+                        self.state.command_result_selected_action = 0;
+                    }
+                } else {
+                    self.state.command_result = None;
+                }
+            }
             _ => {}
         }
         false
+    }
+
+    /// Handle keys in the action confirmation dialog.
+    fn handle_key_action_confirm(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                // Execute the action
+                self.execute_selected_action();
+                self.state.show_action_confirm = false;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.state.show_action_confirm = false;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Execute the currently selected action from the command result.
+    fn execute_selected_action(&mut self) {
+        let (action_label, action) = {
+            let cr = match self.state.command_result.as_ref() {
+                Some(cr) => cr,
+                None => return,
+            };
+            let sel = self.state.command_result_selected_action;
+            if sel >= cr.actions.len() {
+                return;
+            }
+            cr.actions[sel].clone()
+        };
+
+        let status = match &action {
+            SuggestedAction::KillProcess { pid, name, signal } => {
+                let sig_num = match *signal {
+                    "SIGTERM" => libc::SIGTERM,
+                    "SIGKILL" => libc::SIGKILL,
+                    "SIGHUP" => libc::SIGHUP,
+                    _ => libc::SIGTERM,
+                };
+                let result = unsafe { libc::kill(*pid as i32, sig_num) };
+                if result == 0 {
+                    format!("Sent {} to PID {} ({})", signal, pid, name)
+                } else {
+                    let err = std::io::Error::last_os_error();
+                    format!("Failed to send {} to PID {} ({}): {}", signal, pid, name, err)
+                }
+            }
+            SuggestedAction::ReniceProcess { pid, name, nice } => {
+                let result =
+                    unsafe { libc::setpriority(libc::PRIO_PROCESS, *pid, *nice) };
+                if result == 0 {
+                    format!("Set nice {} for PID {} ({})", nice, pid, name)
+                } else {
+                    let err = std::io::Error::last_os_error();
+                    format!("Renice failed for PID {} ({}): {}", pid, name, err)
+                }
+            }
+            SuggestedAction::FreePort { port, pid, name } => {
+                let result = unsafe { libc::kill(*pid as i32, libc::SIGTERM) };
+                if result == 0 {
+                    format!("Sent SIGTERM to PID {} ({}) to free port {}", pid, name, port)
+                } else {
+                    let err = std::io::Error::last_os_error();
+                    format!("Failed to kill PID {} ({}): {}", pid, name, err)
+                }
+            }
+            SuggestedAction::CleanDirectory { path, size_bytes } => {
+                match std::fs::remove_dir_all(path) {
+                    Ok(_) => {
+                        // Recreate the directory so it exists but is empty
+                        let _ = std::fs::create_dir_all(path);
+                        format!(
+                            "Cleaned {} ({:.1} GB freed)",
+                            path,
+                            *size_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+                        )
+                    }
+                    Err(e) => format!("Failed to clean {}: {}", path, e),
+                }
+            }
+            SuggestedAction::Info(_) => {
+                action_label.clone()
+            }
+        };
+
+        self.state.set_status(status.clone());
+
+        // Close the result popup after executing
+        self.state.command_result = None;
+        self.state.command_result_scroll = 0;
+        self.state.command_result_selected_action = 0;
     }
 
     /// Parse and execute a command palette command.
@@ -1037,12 +1213,14 @@ impl App {
 
         let cmd = parts[0].to_lowercase();
         let result = match cmd.as_str() {
-            // System diagnostics
+            // System diagnostics — returns report with actions
             "why" | "slow" | "why-slow" | "contention" => {
                 if let Some(system) = &self.state.system {
-                    DiagnosticEngine::resource_contention(system, &self.state.processes).to_text()
+                    let report =
+                        DiagnosticEngine::resource_contention(system, &self.state.processes);
+                    CommandResult::from_report(&report)
                 } else {
-                    "No system data available yet.".to_string()
+                    CommandResult::text_only("No system data available yet.".to_string())
                 }
             }
 
@@ -1050,9 +1228,10 @@ impl App {
             "timeline" | "history" | "what-happened" | "away" => {
                 let minutes = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(30);
                 if let Some(ref store) = self.event_store {
-                    DiagnosticEngine::timeline_report(store, minutes).to_text()
+                    let report = DiagnosticEngine::timeline_report(store, minutes);
+                    CommandResult::from_report(&report)
                 } else {
-                    "Event store not available.".to_string()
+                    CommandResult::text_only("Event store not available.".to_string())
                 }
             }
 
@@ -1060,12 +1239,15 @@ impl App {
             "port" => {
                 if let Some(port) = parts.get(1).and_then(|s| s.parse::<u16>().ok()) {
                     if let Some(ref store) = self.event_store {
-                        DiagnosticEngine::port_diagnosis(store, port).to_text()
+                        let report = DiagnosticEngine::port_diagnosis(store, port);
+                        CommandResult::from_report(&report)
                     } else {
-                        "Event store not available.".to_string()
+                        CommandResult::text_only("Event store not available.".to_string())
                     }
                 } else {
-                    "Usage: port <number>\nExample: port 8080".to_string()
+                    CommandResult::text_only(
+                        "Usage: port <number>\nExample: port 8080".to_string(),
+                    )
                 }
             }
 
@@ -1074,12 +1256,15 @@ impl App {
                 if let Some(pid) = parts.get(1).and_then(|s| s.parse::<u32>().ok()) {
                     let current = self.state.processes.iter().find(|p| p.pid == pid);
                     if let Some(ref store) = self.event_store {
-                        DiagnosticEngine::process_analysis(store, pid, current).to_text()
+                        let report = DiagnosticEngine::process_analysis(store, pid, current);
+                        CommandResult::from_report(&report)
                     } else {
-                        "Event store not available.".to_string()
+                        CommandResult::text_only("Event store not available.".to_string())
                     }
                 } else {
-                    "Usage: pid <number>\nExample: pid 1234".to_string()
+                    CommandResult::text_only(
+                        "Usage: pid <number>\nExample: pid 1234".to_string(),
+                    )
                 }
             }
 
@@ -1087,18 +1272,20 @@ impl App {
             "anomaly" | "anomalies" | "scan" => {
                 let minutes = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(30);
                 if let Some(ref store) = self.event_store {
-                    DiagnosticEngine::anomaly_scan(store, minutes).to_text()
+                    let report = DiagnosticEngine::anomaly_scan(store, minutes);
+                    CommandResult::from_report(&report)
                 } else {
-                    "Event store not available.".to_string()
+                    CommandResult::text_only("Event store not available.".to_string())
                 }
             }
 
             // Disk analysis
             "disk" | "disks" | "storage" => {
                 if let Some(system) = &self.state.system {
-                    DiagnosticEngine::disk_analysis(system).to_text()
+                    let report = DiagnosticEngine::disk_analysis(system);
+                    CommandResult::from_report(&report)
                 } else {
-                    "No system data available yet.".to_string()
+                    CommandResult::text_only("No system data available yet.".to_string())
                 }
             }
 
@@ -1107,27 +1294,32 @@ impl App {
                 if let Some(ref store) = self.event_store {
                     match store.query_current_listeners() {
                         Ok(listeners) if listeners.is_empty() => {
-                            "No active listeners found.".to_string()
+                            CommandResult::text_only("No active listeners found.".to_string())
                         }
                         Ok(listeners) => {
-                            let mut lines = vec![format!("# Active Listeners ({} total)", listeners.len())];
+                            let mut lines =
+                                vec![format!("# Active Listeners ({} total)", listeners.len())];
                             for s in &listeners {
                                 let who = match (&s.pid, &s.name) {
-                                    (Some(pid), Some(name)) => format!("{} (PID {})", name, pid),
+                                    (Some(pid), Some(name)) => {
+                                        format!("{} (PID {})", name, pid)
+                                    }
                                     (Some(pid), None) => format!("PID {}", pid),
                                     _ => "unknown".to_string(),
                                 };
                                 lines.push(format!(
-                                    "  {} {}:{} ← {}",
+                                    "  {} {}:{} <- {}",
                                     s.protocol, s.local_addr, s.local_port, who
                                 ));
                             }
-                            lines.join("\n")
+                            CommandResult::text_only(lines.join("\n"))
                         }
-                        Err(e) => format!("Error querying listeners: {}", e),
+                        Err(e) => {
+                            CommandResult::text_only(format!("Error querying listeners: {}", e))
+                        }
                     }
                 } else {
-                    "Event store not available.".to_string()
+                    CommandResult::text_only("Event store not available.".to_string())
                 }
             }
 
@@ -1139,22 +1331,25 @@ impl App {
                             let size = store.db_size_bytes();
                             let mut lines = vec![
                                 "# Event Store Statistics".to_string(),
-                                format!("  Database size: {}", crate::models::format_bytes(size)),
+                                format!(
+                                    "  Database size: {}",
+                                    crate::models::format_bytes(size)
+                                ),
                             ];
                             for (table, count) in &stats {
                                 lines.push(format!("  {}: {} rows", table, count));
                             }
-                            lines.join("\n")
+                            CommandResult::text_only(lines.join("\n"))
                         }
-                        Err(e) => format!("Error: {}", e),
+                        Err(e) => CommandResult::text_only(format!("Error: {}", e)),
                     }
                 } else {
-                    "Event store not available.".to_string()
+                    CommandResult::text_only("Event store not available.".to_string())
                 }
             }
 
             // Help
-            "help" | "?" | "commands" => {
+            "help" | "?" | "commands" => CommandResult::text_only(
                 "# Command Palette\n\n\
                  System:\n\
                  \x20 why / slow         - Resource contention analysis\n\
@@ -1168,20 +1363,23 @@ impl App {
                  \x20 pid <number>       - Deep process analysis\n\n\
                  Meta:\n\
                  \x20 stats              - Event store statistics\n\
-                 \x20 help               - This help message"
-                    .to_string()
-            }
+                 \x20 help               - This help message\n\n\
+                 Actions:\n\
+                 \x20 When actions (kill, renice, clean) appear in results,\n\
+                 \x20 use Tab to select and Enter to execute them."
+                    .to_string(),
+            ),
 
-            _ => {
-                format!(
-                    "Unknown command: '{}'\nType 'help' for available commands.",
-                    input
-                )
-            }
+            _ => CommandResult::text_only(format!(
+                "Unknown command: '{}'\nType 'help' for available commands.",
+                input
+            )),
         };
 
         self.state.command_result = Some(result);
         self.state.command_result_scroll = 0;
+        self.state.command_result_selected_action = 0;
+        self.state.show_action_confirm = false;
     }
 
     // ── Contextual AI query ──────────────────────────────────────
