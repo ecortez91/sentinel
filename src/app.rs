@@ -1323,6 +1323,129 @@ impl App {
                 }
             }
 
+            // Event timeline — visual event log
+            "events" | "log" | "event-log" => {
+                let minutes = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(30);
+                if let Some(ref store) = self.event_store {
+                    let since_ms =
+                        crate::store::now_epoch_ms_pub() - (minutes as i64 * 60 * 1000);
+                    match store.query_events_since(since_ms) {
+                        Ok(events) if events.is_empty() => {
+                            CommandResult::text_only(format!(
+                                "# Event Timeline (last {} min)\n\nNo events recorded.",
+                                minutes
+                            ))
+                        }
+                        Ok(events) => {
+                            let now = crate::store::now_epoch_ms_pub();
+                            let mut lines = vec![format!(
+                                "# Event Timeline (last {} min, {} events)",
+                                minutes,
+                                events.len()
+                            )];
+                            lines.push(String::new());
+
+                            // Group by time buckets for readability
+                            let mut last_bucket = String::new();
+                            for e in events.iter().take(100) {
+                                let age_ms = now - e.ts;
+                                let bucket = if age_ms < 60_000 {
+                                    "Just now".to_string()
+                                } else if age_ms < 300_000 {
+                                    format!("{}m ago", age_ms / 60_000)
+                                } else if age_ms < 3_600_000 {
+                                    format!("{}m ago", age_ms / 60_000)
+                                } else {
+                                    format!("{}h {}m ago", age_ms / 3_600_000, (age_ms % 3_600_000) / 60_000)
+                                };
+
+                                if bucket != last_bucket {
+                                    if !last_bucket.is_empty() {
+                                        lines.push(String::new());
+                                    }
+                                    lines.push(format!("  --- {} ---", bucket));
+                                    last_bucket = bucket;
+                                }
+
+                                let icon = match e.kind.as_str() {
+                                    "process_start" => "+",
+                                    "process_exit" => "-",
+                                    "port_bind" => ">",
+                                    "port_release" => "<",
+                                    "alert" => "!",
+                                    "cpu_spike" => "^",
+                                    "memory_spike" => "~",
+                                    "oom_kill" => "X",
+                                    _ => "?",
+                                };
+
+                                let pid_str = e
+                                    .pid
+                                    .map(|p| format!(" PID {}", p))
+                                    .unwrap_or_default();
+                                let name_str = e
+                                    .name
+                                    .as_deref()
+                                    .map(|n| format!(" ({})", n))
+                                    .unwrap_or_default();
+                                let severity_str = e
+                                    .severity
+                                    .as_deref()
+                                    .filter(|s| !s.is_empty())
+                                    .map(|s| format!(" [{}]", s))
+                                    .unwrap_or_default();
+
+                                let kind_label = match e.kind.as_str() {
+                                    "process_start" => "Started",
+                                    "process_exit" => "Exited",
+                                    "port_bind" => "Port bound",
+                                    "port_release" => "Port released",
+                                    "alert" => "Alert",
+                                    "cpu_spike" => "CPU spike",
+                                    "memory_spike" => "Memory spike",
+                                    "oom_kill" => "OOM Kill",
+                                    other => other,
+                                };
+
+                                lines.push(format!(
+                                    "  {} {}{}{}{}",
+                                    icon, kind_label, pid_str, name_str, severity_str
+                                ));
+                            }
+
+                            if events.len() > 100 {
+                                lines.push(String::new());
+                                lines.push(format!(
+                                    "  ... and {} more events (showing first 100)",
+                                    events.len() - 100
+                                ));
+                            }
+
+                            // Event count summary at the bottom
+                            lines.push(String::new());
+                            lines.push("# Summary".to_string());
+                            let mut kind_counts: std::collections::HashMap<&str, usize> =
+                                std::collections::HashMap::new();
+                            for e in &events {
+                                *kind_counts.entry(&e.kind).or_default() += 1;
+                            }
+                            let mut sorted: Vec<_> = kind_counts.into_iter().collect();
+                            sorted.sort_by(|a, b| b.1.cmp(&a.1));
+                            for (kind, count) in sorted {
+                                lines.push(format!("  {}: {}", kind, count));
+                            }
+
+                            CommandResult::text_only(lines.join("\n"))
+                        }
+                        Err(e) => {
+                            CommandResult::text_only(format!("Error querying events: {}", e))
+                        }
+                    }
+                } else {
+                    CommandResult::text_only("Event store not available.".to_string())
+                }
+            }
+
             // Event store stats
             "stats" | "db" | "store" => {
                 if let Some(ref store) = self.event_store {
@@ -1361,6 +1484,8 @@ impl App {
                  \x20 listeners          - All active port listeners\n\n\
                  Process:\n\
                  \x20 pid <number>       - Deep process analysis\n\n\
+                 Events:\n\
+                 \x20 events [minutes]   - Event timeline (default: 30 min)\n\n\
                  Meta:\n\
                  \x20 stats              - Event store statistics\n\
                  \x20 help               - This help message\n\n\
@@ -1461,6 +1586,43 @@ impl App {
                 if self.state.tick_count % self.net_scan_interval == 0 {
                     let _ = store.insert_network_sockets();
                     let _ = store.detect_port_changes();
+                }
+            }
+
+            // Update event ticker for dashboard (last 5 events)
+            if let Some(ref store) = self.event_store {
+                let five_min_ago =
+                    crate::store::now_epoch_ms_pub() - (5 * 60 * 1000);
+                if let Ok(events) = store.query_events_since(five_min_ago) {
+                    let now = crate::store::now_epoch_ms_pub();
+                    self.state.recent_events = events
+                        .iter()
+                        .take(8)
+                        .map(|e| {
+                            let age_ms = now - e.ts;
+                            let age = if age_ms < 60_000 {
+                                "now".to_string()
+                            } else {
+                                format!("{}m", age_ms / 60_000)
+                            };
+                            let icon = match e.kind.as_str() {
+                                "process_start" => "+",
+                                "process_exit" => "-",
+                                "port_bind" => ">",
+                                "port_release" => "<",
+                                "alert" => "!",
+                                "cpu_spike" => "^",
+                                "memory_spike" => "~",
+                                "oom_kill" => "X",
+                                _ => "?",
+                            };
+                            let name = e
+                                .name
+                                .as_deref()
+                                .unwrap_or("unknown");
+                            format!("[{}] {} {}", age, icon, name)
+                        })
+                        .collect();
                 }
             }
 

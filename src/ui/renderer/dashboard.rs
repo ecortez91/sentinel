@@ -130,7 +130,18 @@ pub fn render_dashboard(frame: &mut Frame, area: Rect, state: &AppState) {
         render_ai_insight(frame, chunks[7], state);
     }
     render_top_processes(frame, chunks[8], state);
-    render_recent_alerts(frame, chunks[9], state);
+
+    // Bottom row: split between recent alerts and event ticker
+    if !state.recent_events.is_empty() {
+        let bottom_split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(chunks[9]);
+        render_recent_alerts(frame, bottom_split[0], state);
+        render_event_ticker(frame, bottom_split[1], state);
+    } else {
+        render_recent_alerts(frame, chunks[9], state);
+    }
 }
 
 fn render_system_gauges(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -551,13 +562,61 @@ fn render_network_panel(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+fn render_event_ticker(frame: &mut Frame, area: Rect, state: &AppState) {
+    let t = &state.theme;
+    let event_count = state.recent_events.len();
+    let title = format!(" Events (last 5m: {}) ", event_count);
+    let block = Block::default()
+        .title(Span::styled(&title, t.header_style()))
+        .borders(Borders::ALL)
+        .border_style(t.border_style());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.recent_events.is_empty() {
+        let msg = Paragraph::new(Line::from(vec![Span::styled(
+            " No recent events",
+            Style::default().fg(t.text_dim),
+        )]));
+        frame.render_widget(msg, inner);
+        return;
+    }
+
+    let lines: Vec<Line> = state
+        .recent_events
+        .iter()
+        .take(inner.height as usize)
+        .map(|event_str| {
+            let color = if event_str.contains("! ") {
+                t.warning
+            } else if event_str.contains("+ ") {
+                t.success
+            } else if event_str.contains("- ") {
+                t.danger
+            } else if event_str.contains("> ") || event_str.contains("< ") {
+                t.info
+            } else if event_str.contains("X ") {
+                t.danger
+            } else {
+                t.text_dim
+            };
+            Line::from(Span::styled(
+                format!(
+                    " {}",
+                    truncate_str(event_str, inner.width.saturating_sub(2) as usize)
+                ),
+                Style::default().fg(color),
+            ))
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn render_disk_panel(frame: &mut Frame, area: Rect, state: &AppState) {
     let t = &state.theme;
     let block = Block::default()
-        .title(Span::styled(
-            t!("title.filesystems").to_string(),
-            t.header_style(),
-        ))
+        .title(Span::styled(t!("title.disk").to_string(), t.header_style()))
         .borders(Borders::ALL)
         .border_style(t.border_style());
     let inner = block.inner(area);
@@ -567,7 +626,7 @@ fn render_disk_panel(frame: &mut Frame, area: Rect, state: &AppState) {
 
     if sys.disks.is_empty() {
         let msg = Paragraph::new(Line::from(vec![Span::styled(
-            t!("disk.none").to_string(),
+            " No disks found",
             Style::default().fg(t.text_muted),
         )]));
         frame.render_widget(msg, inner);
@@ -590,7 +649,7 @@ fn render_disk_panel(frame: &mut Frame, area: Rect, state: &AppState) {
             let bar_width = 16;
             let filled = ((pct / 100.0) * bar_width as f64) as usize;
             let empty = bar_width - filled;
-            let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+            let bar = format!("{}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty));
 
             Line::from(vec![
                 Span::styled(

@@ -296,6 +296,9 @@ pub struct AppState {
     // ── Language ────────────────────────────────────────────
     pub current_lang: String,
 
+    // ── Event ticker (recent events from store for dashboard) ──
+    pub recent_events: Vec<String>,
+
     // ── Command palette ───────────────────────────────────
     pub show_command_palette: bool,
     pub command_input: String,
@@ -375,6 +378,8 @@ impl AppState {
             container_scroll: 0,
             // Language
             current_lang: rust_i18n::locale().to_string(),
+            // Event ticker
+            recent_events: Vec::new(),
             // Command palette
             show_command_palette: false,
             command_input: String::new(),
