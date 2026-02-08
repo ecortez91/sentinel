@@ -98,6 +98,8 @@ pub struct App {
     ai_rx: mpsc::UnboundedReceiver<AiEvent>,
     insight_tx: mpsc::UnboundedSender<AiEvent>,
     insight_rx: mpsc::UnboundedReceiver<AiEvent>,
+    command_ai_tx: mpsc::UnboundedSender<AiEvent>,
+    command_ai_rx: mpsc::UnboundedReceiver<AiEvent>,
     docker_rx: mpsc::UnboundedReceiver<Vec<ContainerInfo>>,
 
     // Prometheus
@@ -153,6 +155,7 @@ impl App {
         // AI channels
         let (ai_tx, ai_rx) = mpsc::unbounded_channel::<AiEvent>();
         let (insight_tx, insight_rx) = mpsc::unbounded_channel::<AiEvent>();
+        let (command_ai_tx, command_ai_rx) = mpsc::unbounded_channel::<AiEvent>();
 
         // Docker monitoring
         let docker = DockerMonitor::new();
@@ -217,6 +220,8 @@ impl App {
             ai_rx,
             insight_tx,
             insight_rx,
+            command_ai_tx,
+            command_ai_rx,
             docker_rx,
             shared_metrics,
             event_store,
@@ -251,6 +256,7 @@ impl App {
             self.drain_ai_events();
             self.drain_insight_events();
             self.drain_docker_events();
+            self.drain_command_ai_events();
 
             if event::poll(Duration::from_millis(EVENT_POLL_MS))? {
                 let terminal_event = event::read()?;
@@ -333,6 +339,27 @@ impl App {
         }
     }
 
+    fn drain_command_ai_events(&mut self) {
+        while let Ok(event) = self.command_ai_rx.try_recv() {
+            match event {
+                AiEvent::Chunk(text) => {
+                    if let Some(ref mut cr) = self.state.command_result {
+                        cr.text.push_str(&text);
+                    }
+                }
+                AiEvent::Done => {
+                    self.state.command_ai_loading = false;
+                }
+                AiEvent::Error(err) => {
+                    self.state.command_ai_loading = false;
+                    if let Some(ref mut cr) = self.state.command_result {
+                        cr.text.push_str(&format!("\n\nError: {}", err));
+                    }
+                }
+            }
+        }
+    }
+
     // ── AI dispatch (deduplicated) ───────────────────────────────
 
     /// Build diagnostic context from the event store for AI enrichment.
@@ -402,6 +429,45 @@ impl App {
             "content": "Analyze my system now. Give me a quick health check."
         })];
         let tx = self.insight_tx.clone();
+
+        tokio::spawn(async move {
+            let auth = ClaudeClient::discover_auth().await;
+            if let Some(auth) = auth {
+                let client = ClaudeClient::new(auth);
+                let _ = client.ask_streaming(&full_system, messages, tx).await;
+            }
+        });
+    }
+
+    /// Dispatch a natural language query from the command palette to the AI.
+    fn dispatch_command_ai(&mut self, query: &str) {
+        self.state.command_ai_loading = true;
+        let context = ContextBuilder::build(
+            self.state.system.as_ref(),
+            &self.state.processes,
+            &self.state.alerts,
+        );
+        let diagnostic_context = self.build_diagnostic_context();
+        let system_prompt = format!(
+            "{}\n\n\
+             The user asked this via the command palette. Give a concise, actionable answer.\n\
+             Focus on their specific question. Use bullet points. Be brief — this appears in a popup.\n\
+             If their question relates to system diagnostics, use the live data and diagnostic findings below.",
+            build_system_prompt(self.state.system.as_ref()),
+        );
+        let full_system = if diagnostic_context.is_empty() {
+            format!("{}{}{}", system_prompt, AI_CONTEXT_SEPARATOR, context)
+        } else {
+            format!(
+                "{}{}{}\n\n--- DIAGNOSTIC FINDINGS ---\n\n{}",
+                system_prompt, AI_CONTEXT_SEPARATOR, context, diagnostic_context
+            )
+        };
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": query
+        })];
+        let tx = self.command_ai_tx.clone();
 
         tokio::spawn(async move {
             let auth = ClaudeClient::discover_auth().await;
@@ -1014,6 +1080,7 @@ impl App {
                 self.state.command_result = None;
                 self.state.command_result_scroll = 0;
                 self.state.command_result_selected_action = 0;
+                self.state.command_ai_loading = false;
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.state.command_result_scroll > 0 {
@@ -1495,10 +1562,23 @@ impl App {
                     .to_string(),
             ),
 
-            _ => CommandResult::text_only(format!(
-                "Unknown command: '{}'\nType 'help' for available commands.",
-                input
-            )),
+            _ => {
+                // Natural language fallback: route to AI if available
+                if self.has_key && self.claude_client.is_some() {
+                    self.dispatch_command_ai(input);
+                    CommandResult::text_only(format!(
+                        "# AI Query: {}\n\nThinking...",
+                        input
+                    ))
+                } else {
+                    CommandResult::text_only(format!(
+                        "Unknown command: '{}'\nType 'help' for available commands.\n\n\
+                         Tip: With an AI key configured, unrecognized commands\n\
+                         are automatically sent to the AI for analysis.",
+                        input
+                    ))
+                }
+            }
         };
 
         self.state.command_result = Some(result);

@@ -459,16 +459,24 @@ pub fn render_command_result(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(Clear, popup_area);
 
     let has_actions = result.has_executable_actions();
-    let title = if has_actions {
-        " Diagnostic Result (Tab: select action, 1-9: quick select, Esc: close) "
+    let is_ai_loading = state.command_ai_loading;
+    let title = if is_ai_loading {
+        let dots = crate::utils::loading_dots(state.tick_count);
+        format!(" AI Thinking{} (Esc to close) ", dots)
+    } else if has_actions {
+        " Diagnostic Result (Tab: select action, 1-9: quick select, Esc: close) ".to_string()
     } else {
-        " Diagnostic Result (Esc to close, Up/Down scroll) "
+        " Diagnostic Result (Esc to close, Up/Down scroll) ".to_string()
     };
 
     let block = Block::default()
-        .title(Span::styled(title, t.header_style()))
+        .title(Span::styled(&title, t.header_style()))
         .borders(Borders::ALL)
-        .border_style(t.border_highlight_style());
+        .border_style(if is_ai_loading {
+            Style::default().fg(t.ai_accent)
+        } else {
+            t.border_highlight_style()
+        });
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 

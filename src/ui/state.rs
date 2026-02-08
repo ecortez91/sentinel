@@ -299,6 +299,10 @@ pub struct AppState {
     // ── Event ticker (recent events from store for dashboard) ──
     pub recent_events: Vec<String>,
 
+    // ── Command AI (natural language fallback) ──────────────
+    /// When true, we're waiting for an AI response to a command palette query.
+    pub command_ai_loading: bool,
+
     // ── Command palette ───────────────────────────────────
     pub show_command_palette: bool,
     pub command_input: String,
@@ -380,6 +384,8 @@ impl AppState {
             current_lang: rust_i18n::locale().to_string(),
             // Event ticker
             recent_events: Vec::new(),
+            // Command AI
+            command_ai_loading: false,
             // Command palette
             show_command_palette: false,
             command_input: String::new(),
