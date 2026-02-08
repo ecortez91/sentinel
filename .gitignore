@@ -1,0 +1,20 @@
+/target
+
+# Environment and secrets
+.env
+.env.*
+*.pem
+*.key
+auth.json
+.credentials.json
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

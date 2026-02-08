@@ -1,0 +1,258 @@
+# Sentinel - Español
+
+# ── Pestañas ───────────────────────────────────────────
+tab.dashboard = " Panel "
+tab.processes = " Procesos "
+tab.alerts = " Alertas "
+tab.ask_ai = " Consultar IA "
+
+# ── Marca ──────────────────────────────────────────────
+app.name = " SENTINEL "
+app.version = "v0.2"
+app.stopped = "  Sentinel detenido. ¡Cuídate!"
+
+# ── Resumen del Sistema ────────────────────────────────
+summary.cpu_ram_procs = "CPU %{cpu}% │ RAM %{ram}% │ %{procs} procesos"
+summary.loading = "Cargando..."
+
+# ── Títulos de Sección ─────────────────────────────────
+title.system_resources = " Recursos del Sistema "
+title.cpu_cores = " Núcleos CPU "
+title.cpu_cores_temp = " Núcleos CPU (%{temp}°C) "
+title.history = " Historial (%{window}) [+/-: zoom] "
+title.network = " Red E/S "
+title.filesystems = " Sistemas de Archivos "
+title.docker = " Docker (%{running}/%{total} activos) "
+title.ai_analysis = " Análisis IA "
+title.top_processes = " Procesos Principales (por CPU) "
+title.recent_alerts = " Alertas Recientes (%{count}) "
+title.alert_history = " Historial de Alertas (%{count}) "
+title.ask_ai_full = " Consultar IA - Potenciado por Claude Opus 4.6 "
+title.process_tree = " Árbol de Procesos (t para alternar) "
+title.process_list = " Lista de Procesos "
+title.message = " Mensaje "
+title.help = " Ayuda (? para alternar) "
+
+# ── Etiquetas de Indicadores ──────────────────────────
+gauge.cpu = "CPU  "
+gauge.cpu_temp = "CPU  %{temp}°C  "
+gauge.ram = "RAM  "
+gauge.ram_detail = "RAM  %{used} / %{total}  "
+gauge.swap = "SWAP "
+gauge.load = "CARGA"
+gauge.gpu = "GPU  "
+gauge.vram = "VRAM %{used} / %{total}  "
+gauge.battery = "BAT  "
+gauge.uptime = "activo %{hours}h %{mins}m"
+
+# ── Promedios de Carga ─────────────────────────────────
+load.1m = "1m: %{val}"
+load.5m = "  5m: "
+load.15m = "  15m: "
+
+# ── Estado de Batería ──────────────────────────────────
+battery.charging = "Cargando"
+battery.discharging = "Descargando"
+battery.full = "Completa"
+
+# ── Encabezados de Tabla ───────────────────────────────
+header.pid = "PID"
+header.name = "NOMBRE"
+header.tree_name = "ÁRBOL / NOMBRE"
+header.cpu = "CPU %"
+header.memory = "MEMORIA"
+header.mem_pct = "MEM %"
+header.status = "ESTADO"
+header.user = "USUARIO"
+header.cmd = "CMD"
+header.disk_r = "LECT"
+header.disk_w = "ESCR"
+
+# ── Sparklines ─────────────────────────────────────────
+sparkline.cpu = "CPU %{val}%"
+sparkline.cpu_none = "CPU --%"
+sparkline.ram = "RAM %{val}%"
+sparkline.ram_none = "RAM --%"
+
+# ── Detalles GPU ──────────────────────────────────────
+gpu.temp = " Temp: "
+gpu.power = "  Potencia: "
+gpu.fan = "  Ventilador: "
+
+# ── Red ────────────────────────────────────────────────
+network.none = "  No se detectaron interfaces de red"
+network.rx = "RX: "
+network.tx = "TX: "
+
+# ── Disco ──────────────────────────────────────────────
+disk.none = "  No se detectaron sistemas de archivos"
+
+# ── Docker ─────────────────────────────────────────────
+docker.none = "  No se encontraron contenedores"
+
+# ── IA Insight ─────────────────────────────────────────
+insight.collapse = " e:colapsar ↑↓:desplazar "
+insight.expand = " e:expandir ↑↓:desplazar "
+insight.pending = "pendiente"
+insight.analyzing = "  Analizando tu sistema"
+insight.no_key = "  Sin credenciales API - insight no disponible"
+insight.seconds_ago = "hace %{secs}s"
+insight.minutes_ago = "hace %{mins}m"
+
+# ── Alertas ────────────────────────────────────────────
+alert.none_healthy = "  Sin alertas - el sistema está sano"
+alert.none_normal = "  Sin alertas - todos los sistemas operando normalmente"
+alert.monitoring = "  Sentinel está monitoreando tu sistema en tiempo real."
+alert.threshold_note = "  Las alertas aparecerán cuando se superen los umbrales."
+alert.count = " %{count} alertas "
+
+# ── Filtro ─────────────────────────────────────────────
+filter.hint = "Escribe / para filtrar procesos..."
+filter.active = "Filtro: %{text}_"
+filter.tree_badge = " [ÁRBOL] │"
+
+# ── IA sin clave ───────────────────────────────────────
+ai.no_key_title = "  No se encontraron credenciales API"
+ai.no_key_hint = "  Sentinel detecta automáticamente la autenticación de:"
+ai.no_key_opt1 = "    1. Variable de entorno ANTHROPIC_API_KEY"
+ai.no_key_opt2 = "    2. OpenCode OAuth (~/.local/share/opencode/auth.json)"
+ai.no_key_opt3 = "    3. Credenciales de Claude Code (~/.claude/.credentials.json)"
+ai.no_key_restart = "  Inicia sesión en OpenCode o configura una clave API y reinicia Sentinel."
+
+# ── Bienvenida IA ──────────────────────────────────────
+ai.authenticated = "Autenticado"
+ai.auth_method = "Auth: %{method}"
+ai.welcome_prefix = "  Bienvenido a "
+ai.welcome_name = "Sentinel AI"
+ai.welcome_desc1 = "  Pregunta lo que quieras sobre tu sistema. Claude ve tus datos de procesos,"
+ai.welcome_desc2 = "  uso de memoria, métricas de CPU, alertas y más en tiempo real."
+ai.try_asking = "  Prueba a preguntar:"
+ai.example1 = "    \"¿Qué son estos procesos tokio-runtime-w?\""
+ai.example2 = "    \"¿Qué procesos usan más memoria?\""
+ai.example3 = "    \"¿Hay algo sospechoso ejecutándose?\""
+ai.example4 = "    \"¿Por qué está lento mi sistema ahora?\""
+ai.example5 = "    \"¿Qué son esos 2 procesos worker?\""
+ai.type_hint = "  Escribe tu pregunta abajo y presiona Enter."
+
+# ── Chat ───────────────────────────────────────────────
+chat.you = " TÚ "
+chat.ai = " IA "
+chat.waiting = "  Esperando respuesta..."
+chat.no_key = "  Se requiere clave API"
+chat.placeholder = "  Pregunta sobre tu sistema..."
+chat.thinking = " %{spinner} Claude está pensando... "
+
+# ── Teclas Chat ────────────────────────────────────────
+key.enter = "Enter"
+key.send = " Enviar  "
+key.ctrl_l = "Ctrl+L"
+key.clear_chat = " Borrar Chat  "
+key.esc = "Esc"
+key.back = " Volver"
+
+# ── Barra de Estado ────────────────────────────────────
+status.quit = " Salir "
+status.switch = " Cambiar "
+status.scroll = " Desplazar "
+status.sort = " Ordenar "
+status.ask_ai = " IA "
+status.help = " Ayuda "
+status.tree = " Árbol "
+status.detail = " Detalle "
+status.signal = " Señal "
+status.renice = " Prioridad "
+status.kill = " Matar "
+
+# ── Estado del Sistema ─────────────────────────────────
+health.label = "  │  Sistema: "
+health.critical = "CRÍTICO"
+health.warning = "ADVERTENCIA"
+health.healthy = "SALUDABLE"
+
+# ── Estados de Proceso ─────────────────────────────────
+status.running = "Ejecutando"
+status.sleeping = "Durmiendo"
+status.stopped = "Detenido"
+status.zombie = "Zombi"
+status.dead = "Muerto"
+status.unknown = "Desconocido"
+
+# ── Detalle de Proceso ─────────────────────────────────
+detail.process_info = " Info del Proceso"
+detail.resource_usage = " Uso de Recursos"
+detail.full_command = " Comando Completo"
+detail.open_fds = " Descriptores de Archivo (%{count})"
+detail.env_vars = " Variables de Entorno (%{count})"
+detail.pid = "  PID:      "
+detail.name = "  Nombre:   "
+detail.user = "  Usuario:  "
+detail.status = "  Estado:   "
+detail.parent = "  Padre:    "
+detail.parent_pid = "PID %{pid}"
+detail.threads = "  Hilos:    "
+detail.cpu = "  CPU:      "
+detail.memory = "  Memoria:  "
+detail.and_more = "  ... y %{count} más"
+
+# ── Selector de Señal ─────────────────────────────────
+signal.title = " Enviar Señal a PID %{pid} (%{name}) "
+signal.instructions = " Selecciona una señal (Enter para enviar, Esc para cancelar):"
+
+# ── Diálogo Renice ─────────────────────────────────────
+renice.title = " Repriorizar PID %{pid} (%{name}) "
+renice.value = "  Valor nice: "
+renice.high = "  (mayor prioridad)"
+renice.normal = "  (prioridad normal)"
+renice.low = "  (menor prioridad)"
+renice.adjust = "Ajustar  "
+renice.apply = "Aplicar  "
+renice.cancel = "Cancelar"
+
+# ── Modo Enfoque ───────────────────────────────────────
+focus.unfocus = " Desenfocar  "
+focus.next = " Siguiente widget "
+
+# ── Indicadores de Orden ───────────────────────────────
+sort.asc = " ▲"
+sort.desc = " ▼"
+
+# ── Ayuda ──────────────────────────────────────────────
+help.title = "  SENTINEL - Atajos de Teclado"
+help.switch_tabs = "Cambiar pestañas"
+help.jump_tab = "Ir a pestaña (4 = IA)"
+help.scroll = "Desplazar arriba/abajo"
+help.page = "Página arriba/abajo"
+help.cycle_sort = "Cambiar columna de orden"
+help.reverse_sort = "Invertir dirección de orden"
+help.filter = "Filtrar procesos"
+help.sigterm = "SIGTERM al proceso"
+help.sigkill = "SIGKILL al proceso"
+help.detail = "Popup detalle de proceso"
+help.tree = "Alternar vista de árbol"
+help.theme = "Cambiar tema de color"
+help.signal = "Selector de señal"
+help.renice = "Cambiar prioridad"
+help.zoom = "Zoom en gráficos"
+help.focus = "Enfocar/expandir widget"
+help.ask_proc = "Preguntar IA sobre proceso"
+help.clear_filter = "Limpiar filtro / cerrar ayuda"
+help.quit = "Salir"
+help.ai_tab = "  Pestaña IA:"
+help.send_question = "Enviar pregunta a Claude"
+help.clear_convo = "Borrar conversación"
+help.thresholds = "  Umbrales: "
+help.cpu_thresh = "CPU >50% advert, >90% crít"
+help.ram_thresh = "RAM >1GiB advert, >2GiB crít/proc"
+help.sysram_thresh = "RAM sistema >75% advert, >90% crít"
+
+# ── Ventanas de Historial ──────────────────────────────
+history.1min = "1 min"
+history.5min = "5 min"
+history.15min = "15 min"
+history.1hr = "1 hora"
+
+# ── Unidades ───────────────────────────────────────────
+unit.gib = "%{val} GiB"
+unit.mib = "%{val} MiB"
+unit.kib = "%{val} KiB"
+unit.bytes = "%{val} B"

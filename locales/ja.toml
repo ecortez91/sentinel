@@ -1,0 +1,258 @@
+# Sentinel - 日本語ロケール
+
+# ── タブ ────────────────────────────────────────────────
+tab.dashboard = " ダッシュボード "
+tab.processes = " プロセス "
+tab.alerts = " アラート "
+tab.ask_ai = " AI に質問 "
+
+# ── ブランド ────────────────────────────────────────────
+app.name = " SENTINEL "
+app.version = "v0.2"
+app.stopped = "  Sentinel を停止しました。お気をつけて！"
+
+# ── システム概要 ────────────────────────────────────────
+summary.cpu_ram_procs = "CPU %{cpu}% │ RAM %{ram}% │ %{procs} プロセス"
+summary.loading = "読み込み中..."
+
+# ── セクションタイトル ──────────────────────────────────
+title.system_resources = " システムリソース "
+title.cpu_cores = " CPUコア "
+title.cpu_cores_temp = " CPUコア (%{temp}°C) "
+title.history = " 履歴 (%{window}) [+/-: ズーム] "
+title.network = " ネットワーク I/O "
+title.filesystems = " ファイルシステム "
+title.docker = " Docker (%{running}/%{total} 稼働中) "
+title.ai_analysis = " AI 分析 "
+title.top_processes = " トッププロセス (CPU順) "
+title.recent_alerts = " 最近のアラート (%{count}) "
+title.alert_history = " アラート履歴 (%{count}) "
+title.ask_ai_full = " AI に質問 - Claude Opus 4.6 搭載 "
+title.process_tree = " プロセスツリー (t で切替) "
+title.process_list = " プロセス一覧 "
+title.message = " メッセージ "
+title.help = " ヘルプ (? で切替) "
+
+# ── ゲージラベル ────────────────────────────────────────
+gauge.cpu = "CPU  "
+gauge.cpu_temp = "CPU  %{temp}°C  "
+gauge.ram = "RAM  "
+gauge.ram_detail = "RAM  %{used} / %{total}  "
+gauge.swap = "SWAP "
+gauge.load = "負荷 "
+gauge.gpu = "GPU  "
+gauge.vram = "VRAM %{used} / %{total}  "
+gauge.battery = "電池 "
+gauge.uptime = "稼働 %{hours}時間 %{mins}分"
+
+# ── 負荷平均 ───────────────────────────────────────────
+load.1m = "1分: %{val}"
+load.5m = "  5分: "
+load.15m = "  15分: "
+
+# ── バッテリー ─────────────────────────────────────────
+battery.charging = "充電中"
+battery.discharging = "放電中"
+battery.full = "満充電"
+
+# ── テーブルヘッダー ───────────────────────────────────
+header.pid = "PID"
+header.name = "名前"
+header.tree_name = "ツリー / 名前"
+header.cpu = "CPU %"
+header.memory = "メモリ"
+header.mem_pct = "MEM %"
+header.status = "状態"
+header.user = "ユーザー"
+header.cmd = "コマンド"
+header.disk_r = "読込"
+header.disk_w = "書込"
+
+# ── スパークライン ─────────────────────────────────────
+sparkline.cpu = "CPU %{val}%"
+sparkline.cpu_none = "CPU --%"
+sparkline.ram = "RAM %{val}%"
+sparkline.ram_none = "RAM --%"
+
+# ── GPU詳細 ────────────────────────────────────────────
+gpu.temp = " 温度: "
+gpu.power = "  電力: "
+gpu.fan = "  ファン: "
+
+# ── ネットワーク ───────────────────────────────────────
+network.none = "  ネットワークインターフェースが見つかりません"
+network.rx = "受信: "
+network.tx = "送信: "
+
+# ── ディスク ───────────────────────────────────────────
+disk.none = "  ファイルシステムが見つかりません"
+
+# ── Docker ─────────────────────────────────────────────
+docker.none = "  コンテナが見つかりません"
+
+# ── AIインサイト ───────────────────────────────────────
+insight.collapse = " e:折畳 ↑↓:スクロール "
+insight.expand = " e:展開 ↑↓:スクロール "
+insight.pending = "待機中"
+insight.analyzing = "  システムを分析中"
+insight.no_key = "  API認証情報なし - インサイト利用不可"
+insight.seconds_ago = "%{secs}秒前"
+insight.minutes_ago = "%{mins}分前"
+
+# ── アラート ───────────────────────────────────────────
+alert.none_healthy = "  アラートなし - システムは正常です"
+alert.none_normal = "  アラートなし - 全システム正常稼働中"
+alert.monitoring = "  Sentinel がシステムをリアルタイム監視中です。"
+alert.threshold_note = "  しきい値を超えるとアラートが表示されます。"
+alert.count = " %{count} 件のアラート "
+
+# ── フィルター ─────────────────────────────────────────
+filter.hint = "/ を入力してプロセスをフィルター..."
+filter.active = "フィルター: %{text}_"
+filter.tree_badge = " [ツリー] │"
+
+# ── AI認証なし ─────────────────────────────────────────
+ai.no_key_title = "  API認証情報が見つかりません"
+ai.no_key_hint = "  Sentinel は以下から認証を自動検出します:"
+ai.no_key_opt1 = "    1. ANTHROPIC_API_KEY 環境変数"
+ai.no_key_opt2 = "    2. OpenCode OAuth (~/.local/share/opencode/auth.json)"
+ai.no_key_opt3 = "    3. Claude Code 認証情報 (~/.claude/.credentials.json)"
+ai.no_key_restart = "  OpenCode にログインするか API キーを設定し、Sentinel を再起動してください。"
+
+# ── AIウェルカム ───────────────────────────────────────
+ai.authenticated = "認証済み"
+ai.auth_method = "認証: %{method}"
+ai.welcome_prefix = "  ようこそ "
+ai.welcome_name = "Sentinel AI"
+ai.welcome_desc1 = "  システムについて何でも質問できます。Claude はプロセスデータ、"
+ai.welcome_desc2 = "  メモリ使用量、CPU指標、アラートなどをリアルタイムで参照しています。"
+ai.try_asking = "  質問例:"
+ai.example1 = "    「tokio-runtime-w プロセスとは何ですか？」"
+ai.example2 = "    「最もメモリを使っているプロセスは？」"
+ai.example3 = "    「不審なプロセスはありますか？」"
+ai.example4 = "    「今システムが遅いのはなぜ？」"
+ai.example5 = "    「あの2つのワーカープロセスは何？」"
+ai.type_hint = "  下に質問を入力してEnterを押してください。"
+
+# ── チャット ───────────────────────────────────────────
+chat.you = " あなた "
+chat.ai = " AI "
+chat.waiting = "  応答を待っています..."
+chat.no_key = "  APIキーが必要です"
+chat.placeholder = "  システムについて質問..."
+chat.thinking = " %{spinner} Claude が考え中... "
+
+# ── チャットキー ───────────────────────────────────────
+key.enter = "Enter"
+key.send = " 送信  "
+key.ctrl_l = "Ctrl+L"
+key.clear_chat = " チャット消去  "
+key.esc = "Esc"
+key.back = " 戻る"
+
+# ── ステータスバー ─────────────────────────────────────
+status.quit = " 終了 "
+status.switch = " 切替 "
+status.scroll = " スクロール "
+status.sort = " ソート "
+status.ask_ai = " AI質問 "
+status.help = " ヘルプ "
+status.tree = " ツリー "
+status.detail = " 詳細 "
+status.signal = " シグナル "
+status.renice = " 優先度 "
+status.kill = " 強制終了 "
+
+# ── システム状態 ───────────────────────────────────────
+health.label = "  │  状態: "
+health.critical = "危険"
+health.warning = "警告"
+health.healthy = "正常"
+
+# ── プロセス状態バッジ ─────────────────────────────────
+status.running = "実行中"
+status.sleeping = "スリープ"
+status.stopped = "停止"
+status.zombie = "ゾンビ"
+status.dead = "終了済"
+status.unknown = "不明"
+
+# ── プロセス詳細 ───────────────────────────────────────
+detail.process_info = " プロセス情報"
+detail.resource_usage = " リソース使用量"
+detail.full_command = " フルコマンド"
+detail.open_fds = " オープンファイル記述子 (%{count})"
+detail.env_vars = " 環境変数 (%{count})"
+detail.pid = "  PID:      "
+detail.name = "  名前:     "
+detail.user = "  ユーザー: "
+detail.status = "  状態:     "
+detail.parent = "  親:       "
+detail.parent_pid = "PID %{pid}"
+detail.threads = "  スレッド: "
+detail.cpu = "  CPU:      "
+detail.memory = "  メモリ:   "
+detail.and_more = "  ... 他 %{count} 件"
+
+# ── シグナル選択 ───────────────────────────────────────
+signal.title = " PID %{pid} (%{name}) にシグナル送信 "
+signal.instructions = " シグナルを選択 (Enter で送信、Esc でキャンセル):"
+
+# ── 優先度変更 ─────────────────────────────────────────
+renice.title = " PID %{pid} (%{name}) の優先度変更 "
+renice.value = "  Nice値: "
+renice.high = "  (高優先度)"
+renice.normal = "  (通常優先度)"
+renice.low = "  (低優先度)"
+renice.adjust = "調整  "
+renice.apply = "適用  "
+renice.cancel = "キャンセル"
+
+# ── フォーカスモード ───────────────────────────────────
+focus.unfocus = " フォーカス解除  "
+focus.next = " 次のウィジェット "
+
+# ── ソート ─────────────────────────────────────────────
+sort.asc = " ▲"
+sort.desc = " ▼"
+
+# ── ヘルプ ─────────────────────────────────────────────
+help.title = "  SENTINEL - キーボードショートカット"
+help.switch_tabs = "タブ切替"
+help.jump_tab = "タブにジャンプ (4 = AI)"
+help.scroll = "上下スクロール"
+help.page = "ページアップ/ダウン"
+help.cycle_sort = "ソート列を切替"
+help.reverse_sort = "ソート方向を反転"
+help.filter = "プロセスをフィルター"
+help.sigterm = "SIGTERM を送信"
+help.sigkill = "SIGKILL を送信"
+help.detail = "プロセス詳細ポップアップ"
+help.tree = "ツリー表示切替"
+help.theme = "カラーテーマ切替"
+help.signal = "シグナル選択"
+help.renice = "優先度変更"
+help.zoom = "履歴チャートのズーム"
+help.focus = "ウィジェットをフォーカス/展開"
+help.ask_proc = "プロセスについてAIに質問"
+help.clear_filter = "フィルタークリア / ヘルプ閉じ"
+help.quit = "終了"
+help.ai_tab = "  AI タブ:"
+help.send_question = "Claude に質問を送信"
+help.clear_convo = "会話をクリア"
+help.thresholds = "  しきい値: "
+help.cpu_thresh = "CPU >50% 警告, >90% 危険"
+help.ram_thresh = "RAM >1GiB 警告, >2GiB 危険/プロセス"
+help.sysram_thresh = "システムRAM >75% 警告, >90% 危険"
+
+# ── 履歴ウィンドウ ─────────────────────────────────────
+history.1min = "1分"
+history.5min = "5分"
+history.15min = "15分"
+history.1hr = "1時間"
+
+# ── データ単位 ─────────────────────────────────────────
+unit.gib = "%{val} GiB"
+unit.mib = "%{val} MiB"
+unit.kib = "%{val} KiB"
+unit.bytes = "%{val} B"

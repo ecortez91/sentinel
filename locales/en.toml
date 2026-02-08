@@ -1,0 +1,258 @@
+# Sentinel - English locale (base)
+
+# ── Tab Labels ──────────────────────────────────────────
+tab.dashboard = " Dashboard "
+tab.processes = " Processes "
+tab.alerts = " Alerts "
+tab.ask_ai = " Ask AI "
+
+# ── Branding ────────────────────────────────────────────
+app.name = " SENTINEL "
+app.version = "v0.2"
+app.stopped = "  Sentinel stopped. Stay safe!"
+
+# ── System Summary ──────────────────────────────────────
+summary.cpu_ram_procs = "CPU %{cpu}% │ RAM %{ram}% │ %{procs} procs"
+summary.loading = "Loading..."
+
+# ── Section Titles ──────────────────────────────────────
+title.system_resources = " System Resources "
+title.cpu_cores = " CPU Cores "
+title.cpu_cores_temp = " CPU Cores (%{temp}°C) "
+title.history = " History (%{window}) [+/-: zoom] "
+title.network = " Network I/O "
+title.filesystems = " Filesystems "
+title.docker = " Docker (%{running}/%{total} running) "
+title.ai_analysis = " AI Analysis "
+title.top_processes = " Top Processes (by CPU) "
+title.recent_alerts = " Recent Alerts (%{count}) "
+title.alert_history = " Alert History (%{count}) "
+title.ask_ai_full = " Ask AI - Powered by Claude Opus 4.6 "
+title.process_tree = " Process Tree (t to toggle) "
+title.process_list = " Process List "
+title.message = " Message "
+title.help = " Help (? to toggle) "
+
+# ── Gauge Labels ────────────────────────────────────────
+gauge.cpu = "CPU  "
+gauge.cpu_temp = "CPU  %{temp}°C  "
+gauge.ram = "RAM  "
+gauge.ram_detail = "RAM  %{used} / %{total}  "
+gauge.swap = "SWAP "
+gauge.load = "LOAD "
+gauge.gpu = "GPU  "
+gauge.vram = "VRAM %{used} / %{total}  "
+gauge.battery = "BAT  "
+gauge.uptime = "uptime %{hours}h %{mins}m"
+
+# ── Load Average Labels ────────────────────────────────
+load.1m = "1m: %{val}"
+load.5m = "  5m: "
+load.15m = "  15m: "
+
+# ── Battery Status ──────────────────────────────────────
+battery.charging = "Charging"
+battery.discharging = "Discharging"
+battery.full = "Full"
+
+# ── Table Headers ───────────────────────────────────────
+header.pid = "PID"
+header.name = "NAME"
+header.tree_name = "TREE / NAME"
+header.cpu = "CPU %"
+header.memory = "MEMORY"
+header.mem_pct = "MEM %"
+header.status = "STATUS"
+header.user = "USER"
+header.cmd = "CMD"
+header.disk_r = "DISK R"
+header.disk_w = "DISK W"
+
+# ── Sparkline Labels ───────────────────────────────────
+sparkline.cpu = "CPU %{val}%"
+sparkline.cpu_none = "CPU --%"
+sparkline.ram = "RAM %{val}%"
+sparkline.ram_none = "RAM --%"
+
+# ── GPU Detail Labels ──────────────────────────────────
+gpu.temp = " Temp: "
+gpu.power = "  Power: "
+gpu.fan = "  Fan: "
+
+# ── Network Labels ─────────────────────────────────────
+network.none = "  No network interfaces detected"
+network.rx = "RX: "
+network.tx = "TX: "
+
+# ── Disk Labels ────────────────────────────────────────
+disk.none = "  No filesystems detected"
+
+# ── Docker Labels ──────────────────────────────────────
+docker.none = "  No containers found"
+
+# ── AI Insight Labels ──────────────────────────────────
+insight.collapse = " e:collapse ↑↓:scroll "
+insight.expand = " e:expand ↑↓:scroll "
+insight.pending = "pending"
+insight.analyzing = "  Analyzing your system"
+insight.no_key = "  No API credentials - insight unavailable"
+insight.seconds_ago = "%{secs}s ago"
+insight.minutes_ago = "%{mins}m ago"
+
+# ── Alert Labels ───────────────────────────────────────
+alert.none_healthy = "  No alerts - system is healthy"
+alert.none_normal = "  No alerts - all systems operating normally"
+alert.monitoring = "  Sentinel is monitoring your system in real-time."
+alert.threshold_note = "  Alerts will appear here when thresholds are exceeded."
+alert.count = " %{count} alerts "
+
+# ── Process Filter/Info ────────────────────────────────
+filter.hint = "Type / to filter processes..."
+filter.active = "Filter: %{text}_"
+filter.tree_badge = " [TREE] │"
+
+# ── AI No-Key Messages ────────────────────────────────
+ai.no_key_title = "  No API credentials found"
+ai.no_key_hint = "  Sentinel auto-detects auth from:"
+ai.no_key_opt1 = "    1. ANTHROPIC_API_KEY environment variable"
+ai.no_key_opt2 = "    2. OpenCode OAuth (~/.local/share/opencode/auth.json)"
+ai.no_key_opt3 = "    3. Claude Code credentials (~/.claude/.credentials.json)"
+ai.no_key_restart = "  Login to OpenCode or set an API key, then restart Sentinel."
+
+# ── AI Welcome Screen ─────────────────────────────────
+ai.authenticated = "Authenticated"
+ai.auth_method = "Auth: %{method}"
+ai.welcome_prefix = "  Welcome to "
+ai.welcome_name = "Sentinel AI"
+ai.welcome_desc1 = "  Ask anything about your system. Claude sees your live process data,"
+ai.welcome_desc2 = "  memory usage, CPU metrics, alerts, and more in real-time."
+ai.try_asking = "  Try asking:"
+ai.example1 = "    \"What are these tokio-runtime-w processes?\""
+ai.example2 = "    \"Which processes are using the most memory?\""
+ai.example3 = "    \"Is anything suspicious running on my system?\""
+ai.example4 = "    \"Why is my system slow right now?\""
+ai.example5 = "    \"What are those 2 worker processes?\""
+ai.type_hint = "  Type your question below and press Enter."
+
+# ── Chat Labels ────────────────────────────────────────
+chat.you = " YOU "
+chat.ai = " AI "
+chat.waiting = "  Waiting for response..."
+chat.no_key = "  API key required"
+chat.placeholder = "  Ask about your system..."
+chat.thinking = " %{spinner} Claude is thinking... "
+
+# ── Chat Keybinds ──────────────────────────────────────
+key.enter = "Enter"
+key.send = " Send  "
+key.ctrl_l = "Ctrl+L"
+key.clear_chat = " Clear Chat  "
+key.esc = "Esc"
+key.back = " Back"
+
+# ── Status Bar ─────────────────────────────────────────
+status.quit = " Quit "
+status.switch = " Switch "
+status.scroll = " Scroll "
+status.sort = " Sort "
+status.ask_ai = " Ask AI "
+status.help = " Help "
+status.tree = " Tree "
+status.detail = " Detail "
+status.signal = " Signal "
+status.renice = " Renice "
+status.kill = " Kill "
+
+# ── System Health ──────────────────────────────────────
+health.label = "  │  System: "
+health.critical = "CRITICAL"
+health.warning = "WARNING"
+health.healthy = "HEALTHY"
+
+# ── Process Status Badges ──────────────────────────────
+status.running = "Running"
+status.sleeping = "Sleeping"
+status.stopped = "Stopped"
+status.zombie = "Zombie"
+status.dead = "Dead"
+status.unknown = "Unknown"
+
+# ── Process Detail Popup ───────────────────────────────
+detail.process_info = " Process Info"
+detail.resource_usage = " Resource Usage"
+detail.full_command = " Full Command"
+detail.open_fds = " Open File Descriptors (%{count})"
+detail.env_vars = " Environment Variables (%{count})"
+detail.pid = "  PID:      "
+detail.name = "  Name:     "
+detail.user = "  User:     "
+detail.status = "  Status:   "
+detail.parent = "  Parent:   "
+detail.parent_pid = "PID %{pid}"
+detail.threads = "  Threads:  "
+detail.cpu = "  CPU:      "
+detail.memory = "  Memory:   "
+detail.and_more = "  ... and %{count} more"
+
+# ── Signal Picker ──────────────────────────────────────
+signal.title = " Send Signal to PID %{pid} (%{name}) "
+signal.instructions = " Select a signal (Enter to send, Esc to cancel):"
+
+# ── Renice Dialog ──────────────────────────────────────
+renice.title = " Renice PID %{pid} (%{name}) "
+renice.value = "  Nice value: "
+renice.high = "  (higher priority)"
+renice.normal = "  (normal priority)"
+renice.low = "  (lower priority)"
+renice.adjust = "Adjust  "
+renice.apply = "Apply  "
+renice.cancel = "Cancel"
+
+# ── Focus Mode ─────────────────────────────────────────
+focus.unfocus = " Unfocus  "
+focus.next = " Next widget "
+
+# ── Sort Indicators ────────────────────────────────────
+sort.asc = " ▲"
+sort.desc = " ▼"
+
+# ── Help Overlay ───────────────────────────────────────
+help.title = "  SENTINEL - Keyboard Shortcuts"
+help.switch_tabs = "Switch tabs"
+help.jump_tab = "Jump to tab (4 = Ask AI)"
+help.scroll = "Scroll up/down"
+help.page = "Page up/down"
+help.cycle_sort = "Cycle sort column"
+help.reverse_sort = "Reverse sort direction"
+help.filter = "Filter processes"
+help.sigterm = "SIGTERM selected process"
+help.sigkill = "SIGKILL selected process"
+help.detail = "Process detail popup"
+help.tree = "Toggle process tree view"
+help.theme = "Cycle color theme"
+help.signal = "Signal picker (process)"
+help.renice = "Renice process"
+help.zoom = "Zoom history charts"
+help.focus = "Focus/expand widget"
+help.ask_proc = "Ask AI about process"
+help.clear_filter = "Clear filter / close help"
+help.quit = "Quit"
+help.ai_tab = "  Ask AI Tab:"
+help.send_question = "Send question to Claude"
+help.clear_convo = "Clear conversation"
+help.thresholds = "  Thresholds: "
+help.cpu_thresh = "CPU >50% warn, >90% crit"
+help.ram_thresh = "RAM >1GiB warn, >2GiB crit/proc"
+help.sysram_thresh = "System RAM >75% warn, >90% crit"
+
+# ── History Window Labels ──────────────────────────────
+history.1min = "1 min"
+history.5min = "5 min"
+history.15min = "15 min"
+history.1hr = "1 hr"
+
+# ── Data Units ─────────────────────────────────────────
+unit.gib = "%{val} GiB"
+unit.mib = "%{val} MiB"
+unit.kib = "%{val} KiB"
+unit.bytes = "%{val} B"

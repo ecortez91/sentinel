@@ -1,0 +1,258 @@
+# Sentinel - 中文简体
+
+# ── 标签页 ─────────────────────────────────────────────
+tab.dashboard = " 仪表盘 "
+tab.processes = " 进程 "
+tab.alerts = " 警报 "
+tab.ask_ai = " AI 问答 "
+
+# ── 品牌 ───────────────────────────────────────────────
+app.name = " SENTINEL "
+app.version = "v0.2"
+app.stopped = "  Sentinel 已停止。注意安全！"
+
+# ── 系统摘要 ───────────────────────────────────────────
+summary.cpu_ram_procs = "CPU %{cpu}% │ RAM %{ram}% │ %{procs} 个进程"
+summary.loading = "加载中..."
+
+# ── 区段标题 ───────────────────────────────────────────
+title.system_resources = " 系统资源 "
+title.cpu_cores = " CPU 核心 "
+title.cpu_cores_temp = " CPU 核心 (%{temp}°C) "
+title.history = " 历史记录 (%{window}) [+/-: 缩放] "
+title.network = " 网络 I/O "
+title.filesystems = " 文件系统 "
+title.docker = " Docker (%{running}/%{total} 运行中) "
+title.ai_analysis = " AI 分析 "
+title.top_processes = " 高负载进程 (按CPU) "
+title.recent_alerts = " 最近的警报 (%{count}) "
+title.alert_history = " 警报历史 (%{count}) "
+title.ask_ai_full = " AI 问答 - 由 Claude Opus 4.6 驱动 "
+title.process_tree = " 进程树 (t 切换) "
+title.process_list = " 进程列表 "
+title.message = " 消息 "
+title.help = " 帮助 (? 切换) "
+
+# ── 指标标签 ───────────────────────────────────────────
+gauge.cpu = "CPU  "
+gauge.cpu_temp = "CPU  %{temp}°C  "
+gauge.ram = "RAM  "
+gauge.ram_detail = "RAM  %{used} / %{total}  "
+gauge.swap = "SWAP "
+gauge.load = "负载 "
+gauge.gpu = "GPU  "
+gauge.vram = "VRAM %{used} / %{total}  "
+gauge.battery = "电池 "
+gauge.uptime = "运行 %{hours}小时 %{mins}分钟"
+
+# ── 负载平均值 ─────────────────────────────────────────
+load.1m = "1分: %{val}"
+load.5m = "  5分: "
+load.15m = "  15分: "
+
+# ── 电池状态 ───────────────────────────────────────────
+battery.charging = "充电中"
+battery.discharging = "放电中"
+battery.full = "已充满"
+
+# ── 表头 ───────────────────────────────────────────────
+header.pid = "PID"
+header.name = "名称"
+header.tree_name = "树形 / 名称"
+header.cpu = "CPU %"
+header.memory = "内存"
+header.mem_pct = "MEM %"
+header.status = "状态"
+header.user = "用户"
+header.cmd = "命令"
+header.disk_r = "读取"
+header.disk_w = "写入"
+
+# ── 走势图 ────────────────────────────────────────────
+sparkline.cpu = "CPU %{val}%"
+sparkline.cpu_none = "CPU --%"
+sparkline.ram = "RAM %{val}%"
+sparkline.ram_none = "RAM --%"
+
+# ── GPU 详情 ──────────────────────────────────────────
+gpu.temp = " 温度: "
+gpu.power = "  功率: "
+gpu.fan = "  风扇: "
+
+# ── 网络 ───────────────────────────────────────────────
+network.none = "  未检测到网络接口"
+network.rx = "收: "
+network.tx = "发: "
+
+# ── 磁盘 ───────────────────────────────────────────────
+disk.none = "  未检测到文件系统"
+
+# ── Docker ─────────────────────────────────────────────
+docker.none = "  未找到容器"
+
+# ── AI 洞察 ────────────────────────────────────────────
+insight.collapse = " e:折叠 ↑↓:滚动 "
+insight.expand = " e:展开 ↑↓:滚动 "
+insight.pending = "等待中"
+insight.analyzing = "  正在分析系统"
+insight.no_key = "  无 API 凭证 - 洞察不可用"
+insight.seconds_ago = "%{secs}秒前"
+insight.minutes_ago = "%{mins}分钟前"
+
+# ── 警报 ───────────────────────────────────────────────
+alert.none_healthy = "  无警报 - 系统健康"
+alert.none_normal = "  无警报 - 所有系统正常运行"
+alert.monitoring = "  Sentinel 正在实时监控您的系统。"
+alert.threshold_note = "  超过阈值时将显示警报。"
+alert.count = " %{count} 条警报 "
+
+# ── 过滤器 ─────────────────────────────────────────────
+filter.hint = "输入 / 来过滤进程..."
+filter.active = "过滤: %{text}_"
+filter.tree_badge = " [树形] │"
+
+# ── AI 无密钥 ──────────────────────────────────────────
+ai.no_key_title = "  未找到 API 凭证"
+ai.no_key_hint = "  Sentinel 自动检测认证来源:"
+ai.no_key_opt1 = "    1. ANTHROPIC_API_KEY 环境变量"
+ai.no_key_opt2 = "    2. OpenCode OAuth (~/.local/share/opencode/auth.json)"
+ai.no_key_opt3 = "    3. Claude Code 凭证 (~/.claude/.credentials.json)"
+ai.no_key_restart = "  请登录 OpenCode 或设置 API 密钥，然后重启 Sentinel。"
+
+# ── AI 欢迎 ────────────────────────────────────────────
+ai.authenticated = "已认证"
+ai.auth_method = "认证: %{method}"
+ai.welcome_prefix = "  欢迎使用 "
+ai.welcome_name = "Sentinel AI"
+ai.welcome_desc1 = "  您可以询问任何关于系统的问题。Claude 可以实时查看您的进程数据、"
+ai.welcome_desc2 = "  内存使用、CPU 指标、警报等信息。"
+ai.try_asking = "  试试问:"
+ai.example1 = "    \"tokio-runtime-w 进程是什么？\""
+ai.example2 = "    \"哪些进程占用内存最多？\""
+ai.example3 = "    \"系统上有可疑进程吗？\""
+ai.example4 = "    \"为什么系统现在很慢？\""
+ai.example5 = "    \"那两个 worker 进程是什么？\""
+ai.type_hint = "  在下方输入问题后按 Enter。"
+
+# ── 聊天 ───────────────────────────────────────────────
+chat.you = " 你 "
+chat.ai = " AI "
+chat.waiting = "  等待回复..."
+chat.no_key = "  需要 API 密钥"
+chat.placeholder = "  询问系统相关问题..."
+chat.thinking = " %{spinner} Claude 正在思考... "
+
+# ── 聊天按键 ───────────────────────────────────────────
+key.enter = "Enter"
+key.send = " 发送  "
+key.ctrl_l = "Ctrl+L"
+key.clear_chat = " 清除对话  "
+key.esc = "Esc"
+key.back = " 返回"
+
+# ── 状态栏 ─────────────────────────────────────────────
+status.quit = " 退出 "
+status.switch = " 切换 "
+status.scroll = " 滚动 "
+status.sort = " 排序 "
+status.ask_ai = " AI "
+status.help = " 帮助 "
+status.tree = " 树形 "
+status.detail = " 详情 "
+status.signal = " 信号 "
+status.renice = " 优先级 "
+status.kill = " 终止 "
+
+# ── 系统健康 ───────────────────────────────────────────
+health.label = "  │  状态: "
+health.critical = "危险"
+health.warning = "警告"
+health.healthy = "正常"
+
+# ── 进程状态 ───────────────────────────────────────────
+status.running = "运行中"
+status.sleeping = "睡眠"
+status.stopped = "停止"
+status.zombie = "僵尸"
+status.dead = "已终止"
+status.unknown = "未知"
+
+# ── 进程详情 ───────────────────────────────────────────
+detail.process_info = " 进程信息"
+detail.resource_usage = " 资源使用"
+detail.full_command = " 完整命令"
+detail.open_fds = " 打开的文件描述符 (%{count})"
+detail.env_vars = " 环境变量 (%{count})"
+detail.pid = "  PID:      "
+detail.name = "  名称:     "
+detail.user = "  用户:     "
+detail.status = "  状态:     "
+detail.parent = "  父进程:   "
+detail.parent_pid = "PID %{pid}"
+detail.threads = "  线程:     "
+detail.cpu = "  CPU:      "
+detail.memory = "  内存:     "
+detail.and_more = "  ... 另有 %{count} 项"
+
+# ── 信号选择器 ─────────────────────────────────────────
+signal.title = " 向 PID %{pid} (%{name}) 发送信号 "
+signal.instructions = " 选择信号 (Enter 发送, Esc 取消):"
+
+# ── 优先级对话框 ───────────────────────────────────────
+renice.title = " 调整 PID %{pid} (%{name}) 优先级 "
+renice.value = "  Nice 值: "
+renice.high = "  (更高优先级)"
+renice.normal = "  (正常优先级)"
+renice.low = "  (更低优先级)"
+renice.adjust = "调整  "
+renice.apply = "应用  "
+renice.cancel = "取消"
+
+# ── 聚焦模式 ───────────────────────────────────────────
+focus.unfocus = " 取消聚焦  "
+focus.next = " 下一个组件 "
+
+# ── 排序指示器 ─────────────────────────────────────────
+sort.asc = " ▲"
+sort.desc = " ▼"
+
+# ── 帮助 ───────────────────────────────────────────────
+help.title = "  SENTINEL - 快捷键"
+help.switch_tabs = "切换标签页"
+help.jump_tab = "跳转标签页 (4 = AI)"
+help.scroll = "上下滚动"
+help.page = "翻页"
+help.cycle_sort = "切换排序列"
+help.reverse_sort = "反转排序方向"
+help.filter = "过滤进程"
+help.sigterm = "SIGTERM 发送"
+help.sigkill = "SIGKILL 发送"
+help.detail = "进程详情弹窗"
+help.tree = "切换树形视图"
+help.theme = "切换颜色主题"
+help.signal = "信号选择器"
+help.renice = "调整优先级"
+help.zoom = "缩放历史图表"
+help.focus = "聚焦/展开组件"
+help.ask_proc = "向 AI 询问进程"
+help.clear_filter = "清除过滤 / 关闭帮助"
+help.quit = "退出"
+help.ai_tab = "  AI 标签页:"
+help.send_question = "向 Claude 提问"
+help.clear_convo = "清除对话"
+help.thresholds = "  阈值: "
+help.cpu_thresh = "CPU >50% 警告, >90% 危险"
+help.ram_thresh = "RAM >1GiB 警告, >2GiB 危险/进程"
+help.sysram_thresh = "系统RAM >75% 警告, >90% 危险"
+
+# ── 历史窗口 ───────────────────────────────────────────
+history.1min = "1分钟"
+history.5min = "5分钟"
+history.15min = "15分钟"
+history.1hr = "1小时"
+
+# ── 数据单位 ───────────────────────────────────────────
+unit.gib = "%{val} GiB"
+unit.mib = "%{val} MiB"
+unit.kib = "%{val} KiB"
+unit.bytes = "%{val} B"

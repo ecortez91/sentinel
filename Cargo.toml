@@ -1,0 +1,66 @@
+[package]
+name = "sentinel"
+version = "0.2.0"
+edition = "2021"
+description = "A beautiful terminal process monitor with AI-powered analysis (Claude Opus 4)"
+authors = ["Sentinel"]
+
+[dependencies]
+# TUI framework
+ratatui = "0.29"
+crossterm = "0.28"
+
+# System information
+sysinfo = "0.32"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Time handling
+chrono = "0.4"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Unicode support for beautiful UI
+unicode-width = "0.2"
+
+# HTTP client for Claude API (rustls = no system OpenSSL needed)
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Config file support
+toml = "0.8"
+
+# NVIDIA GPU monitoring (optional, requires libnvidia-ml)
+nvml-wrapper = "0.10"
+
+# Streaming response parsing
+futures-util = "0.3"
+
+# Textwrap for chat bubbles
+textwrap = "0.16"
+
+# POSIX process control (kill, setpriority)
+libc = "0.2"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Docker monitoring (optional, via unix socket)
+bollard = "0.18"
+
+# Prometheus metrics HTTP endpoint
+tiny_http = "0.12"
+
+# Internationalization (i18n)
+rust-i18n = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
