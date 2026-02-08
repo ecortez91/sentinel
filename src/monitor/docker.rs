@@ -2,6 +2,8 @@ use bollard::container::{ListContainersOptions, Stats, StatsOptions};
 use bollard::Docker;
 use futures_util::StreamExt;
 
+use crate::constants::DOCKER_SHORT_ID_LEN;
+
 /// Information about a running Docker container.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -73,7 +75,7 @@ impl DockerMonitor {
                 .as_ref()
                 .and_then(|n| n.first())
                 .map(|n| n.trim_start_matches('/').to_string())
-                .unwrap_or_else(|| id[..12.min(id.len())].to_string());
+                .unwrap_or_else(|| id[..DOCKER_SHORT_ID_LEN.min(id.len())].to_string());
             let image = container.image.clone().unwrap_or_default();
             let status = container.status.clone().unwrap_or_default();
             let state = container.state.clone().unwrap_or_default();
@@ -88,7 +90,7 @@ impl DockerMonitor {
                 };
 
             result.push(ContainerInfo {
-                id: id[..12.min(id.len())].to_string(),
+                id: id[..DOCKER_SHORT_ID_LEN.min(id.len())].to_string(),
                 name,
                 image,
                 status,

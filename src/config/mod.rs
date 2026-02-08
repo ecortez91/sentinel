@@ -1,5 +1,6 @@
 use serde::Deserialize;
-use std::path::PathBuf;
+
+use crate::constants::*;
 
 /// Application configuration with sensible defaults.
 ///
@@ -37,16 +38,16 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            refresh_interval_ms: 1000,
-            cpu_warning_threshold: 50.0,
-            cpu_critical_threshold: 90.0,
+            refresh_interval_ms: DEFAULT_REFRESH_MS,
+            cpu_warning_threshold: DEFAULT_CPU_WARNING_PCT,
+            cpu_critical_threshold: DEFAULT_CPU_CRITICAL_PCT,
             // 1 GiB warning, 2 GiB critical per process
-            mem_warning_threshold_bytes: 1024 * 1024 * 1024,
-            mem_critical_threshold_bytes: 2 * 1024 * 1024 * 1024,
+            mem_warning_threshold_bytes: DEFAULT_MEM_WARNING_BYTES,
+            mem_critical_threshold_bytes: DEFAULT_MEM_CRITICAL_BYTES,
             // System-wide memory
-            sys_mem_warning_percent: 75.0,
-            sys_mem_critical_percent: 90.0,
-            max_alerts: 200,
+            sys_mem_warning_percent: DEFAULT_SYS_MEM_WARNING_PCT,
+            sys_mem_critical_percent: DEFAULT_SYS_MEM_CRITICAL_PCT,
+            max_alerts: DEFAULT_MAX_ALERTS,
             suspicious_patterns: vec![
                 // Note: kworker is intentionally excluded — it's a legitimate
                 // Linux kernel worker thread present on every system.
@@ -57,20 +58,18 @@ impl Default for Config {
                 "cryptonight".to_string(),
                 "stratum".to_string(),
             ],
+            // Patterns unique to security threats; overlap with
+            // suspicious_patterns (xmrig, minerd, cpuminer, kdevtmpfsi,
+            // cryptonight) was removed to avoid duplication.
             security_threat_patterns: vec![
-                "xmrig".to_string(),
-                "minerd".to_string(),
-                "cpuminer".to_string(),
-                "kdevtmpfsi".to_string(),
                 "kinsing".to_string(),
                 "bindshell".to_string(),
                 "reverse_shell".to_string(),
                 "nc -e".to_string(),
                 "ncat -e".to_string(),
-                "cryptonight".to_string(),
                 "coinhive".to_string(),
             ],
-            auto_analysis_interval_secs: 300, // 5 minutes
+            auto_analysis_interval_secs: DEFAULT_AUTO_ANALYSIS_SECS,
             theme: "default".to_string(),
             lang: "en".to_string(),
         }
@@ -104,7 +103,7 @@ impl Config {
     pub fn load() -> Self {
         let mut config = Config::default();
 
-        let config_path = config_file_path();
+        let config_path = crate::constants::config_file_path();
         let content = match std::fs::read_to_string(&config_path) {
             Ok(c) => c,
             Err(_) => return config, // No config file — use defaults
@@ -124,7 +123,7 @@ impl Config {
 
         // Merge file values over defaults
         if let Some(v) = file_config.refresh_interval_ms {
-            config.refresh_interval_ms = v.max(100); // Floor at 100ms
+            config.refresh_interval_ms = v.max(MIN_REFRESH_MS);
         }
         if let Some(v) = file_config.cpu_warning_threshold {
             config.cpu_warning_threshold = v.clamp(1.0, 100.0);
@@ -145,7 +144,7 @@ impl Config {
             config.sys_mem_critical_percent = v.clamp(1.0, 100.0);
         }
         if let Some(v) = file_config.max_alerts {
-            config.max_alerts = v.max(10); // At least 10
+            config.max_alerts = v.max(MIN_MAX_ALERTS);
         }
         if let Some(v) = file_config.suspicious_patterns {
             if !v.is_empty() {
@@ -173,13 +172,4 @@ impl Config {
 
         config
     }
-}
-
-/// Returns ~/.config/sentinel/config.toml
-fn config_file_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home)
-        .join(".config")
-        .join("sentinel")
-        .join("config.toml")
 }

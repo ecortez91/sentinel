@@ -8,6 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::constants::PROM_BUFFER_CAPACITY;
 use crate::models::{Alert, AlertSeverity, SystemSnapshot};
 use crate::monitor::ContainerInfo;
 
@@ -48,22 +49,21 @@ pub fn start_server(addr: &str) -> Result<SharedMetrics, String> {
 
     std::thread::spawn(move || {
         for request in server.incoming_requests() {
-            let response_text = if request.url() == "/metrics" {
-                let snap = metrics_clone.lock().unwrap().clone();
-                render_metrics(&snap)
+            let is_metrics = request.url() == "/metrics";
+
+            let response_text = if is_metrics {
+                match metrics_clone.lock() {
+                    Ok(snap) => render_metrics(&snap),
+                    Err(_) => "# error: metrics lock poisoned\n".to_string(),
+                }
             } else {
                 "404 Not Found\n".to_string()
             };
 
-            let status_code = if request.url() == "/metrics" {
-                200
+            let (status_code, content_type) = if is_metrics {
+                (200, "text/plain; version=0.0.4; charset=utf-8")
             } else {
-                404
-            };
-            let content_type = if request.url() == "/metrics" {
-                "text/plain; version=0.0.4; charset=utf-8"
-            } else {
-                "text/plain"
+                (404, "text/plain")
             };
 
             let response = tiny_http::Response::from_string(&response_text)
@@ -76,379 +76,326 @@ pub fn start_server(addr: &str) -> Result<SharedMetrics, String> {
     Ok(metrics)
 }
 
+// ── Metric definition helpers ────────────────────────────────
+
+/// A metric definition: name, help text, and type.
+struct MetricDef {
+    name: &'static str,
+    help: &'static str,
+    mtype: &'static str,
+}
+
+impl MetricDef {
+    const fn gauge(name: &'static str, help: &'static str) -> Self {
+        Self {
+            name,
+            help,
+            mtype: "gauge",
+        }
+    }
+
+    const fn counter(name: &'static str, help: &'static str) -> Self {
+        Self {
+            name,
+            help,
+            mtype: "counter",
+        }
+    }
+
+    /// Write the HELP and TYPE lines for this metric.
+    fn write_header(&self, out: &mut String) {
+        out.push_str("# HELP ");
+        out.push_str(self.name);
+        out.push(' ');
+        out.push_str(self.help);
+        out.push('\n');
+        out.push_str("# TYPE ");
+        out.push_str(self.name);
+        out.push(' ');
+        out.push_str(self.mtype);
+        out.push('\n');
+    }
+
+    /// Write header + a single unlabeled value.
+    fn emit(&self, out: &mut String, value: f64) {
+        self.write_header(out);
+        push_metric(out, self.name, &[], value);
+    }
+
+    /// Write header + a single labeled value.
+    fn emit_labeled(&self, out: &mut String, labels: &[(&str, &str)], value: f64) {
+        self.write_header(out);
+        push_metric(out, self.name, labels, value);
+    }
+}
+
+// ── Static metric definitions ────────────────────────────────
+
+const M_CPU_USAGE: MetricDef =
+    MetricDef::gauge("sentinel_cpu_usage_percent", "Global CPU usage percentage.");
+const M_CPU_CORE: MetricDef = MetricDef::gauge(
+    "sentinel_cpu_core_usage_percent",
+    "Per-core CPU usage percentage.",
+);
+const M_CPU_COUNT: MetricDef =
+    MetricDef::gauge("sentinel_cpu_count", "Number of logical CPU cores.");
+const M_MEM_TOTAL: MetricDef = MetricDef::gauge(
+    "sentinel_memory_total_bytes",
+    "Total system memory in bytes.",
+);
+const M_MEM_USED: MetricDef =
+    MetricDef::gauge("sentinel_memory_used_bytes", "Used system memory in bytes.");
+const M_MEM_PCT: MetricDef =
+    MetricDef::gauge("sentinel_memory_usage_percent", "Memory usage percentage.");
+const M_SWAP_TOTAL: MetricDef =
+    MetricDef::gauge("sentinel_swap_total_bytes", "Total swap space in bytes.");
+const M_SWAP_USED: MetricDef =
+    MetricDef::gauge("sentinel_swap_used_bytes", "Used swap space in bytes.");
+const M_LOAD: MetricDef = MetricDef::gauge("sentinel_load_average", "System load averages.");
+const M_UPTIME: MetricDef =
+    MetricDef::gauge("sentinel_uptime_seconds", "System uptime in seconds.");
+const M_NET_RX: MetricDef = MetricDef::counter(
+    "sentinel_network_rx_bytes_total",
+    "Total received bytes per interface.",
+);
+const M_NET_TX: MetricDef = MetricDef::counter(
+    "sentinel_network_tx_bytes_total",
+    "Total transmitted bytes per interface.",
+);
+const M_DISK_TOTAL: MetricDef =
+    MetricDef::gauge("sentinel_disk_total_bytes", "Total disk space in bytes.");
+const M_DISK_AVAIL: MetricDef = MetricDef::gauge(
+    "sentinel_disk_available_bytes",
+    "Available disk space in bytes.",
+);
+const M_DISK_READ: MetricDef =
+    MetricDef::gauge("sentinel_disk_read_bytes_per_sec", "Disk read throughput.");
+const M_DISK_WRITE: MetricDef = MetricDef::gauge(
+    "sentinel_disk_write_bytes_per_sec",
+    "Disk write throughput.",
+);
+const M_CPU_TEMP: MetricDef = MetricDef::gauge("sentinel_cpu_temp_celsius", "CPU temperature.");
+const M_GPU_UTIL: MetricDef =
+    MetricDef::gauge("sentinel_gpu_utilization_percent", "GPU utilization.");
+const M_GPU_MEM_USED: MetricDef =
+    MetricDef::gauge("sentinel_gpu_memory_used_bytes", "GPU memory used.");
+const M_GPU_MEM_TOTAL: MetricDef =
+    MetricDef::gauge("sentinel_gpu_memory_total_bytes", "GPU memory total.");
+const M_GPU_TEMP: MetricDef = MetricDef::gauge("sentinel_gpu_temp_celsius", "GPU temperature.");
+const M_GPU_POWER: MetricDef = MetricDef::gauge("sentinel_gpu_power_watts", "GPU power draw.");
+const M_GPU_FAN: MetricDef = MetricDef::gauge("sentinel_gpu_fan_speed_percent", "GPU fan speed.");
+const M_BATTERY: MetricDef =
+    MetricDef::gauge("sentinel_battery_percent", "Battery charge percentage.");
+const M_PROC_COUNT: MetricDef = MetricDef::gauge(
+    "sentinel_process_count",
+    "Total number of tracked processes.",
+);
+const M_ALERT_COUNT: MetricDef = MetricDef::gauge(
+    "sentinel_alert_count",
+    "Number of active alerts by severity.",
+);
+const M_ALERT_TOTAL: MetricDef =
+    MetricDef::gauge("sentinel_alert_total", "Total number of active alerts.");
+const M_DOCKER_TOTAL: MetricDef = MetricDef::gauge(
+    "sentinel_docker_containers_total",
+    "Total Docker containers.",
+);
+const M_DOCKER_RUNNING: MetricDef = MetricDef::gauge(
+    "sentinel_docker_containers_running",
+    "Running Docker containers.",
+);
+const M_DOCKER_CPU: MetricDef = MetricDef::gauge(
+    "sentinel_docker_container_cpu_percent",
+    "Per-container CPU usage.",
+);
+const M_DOCKER_MEM: MetricDef = MetricDef::gauge(
+    "sentinel_docker_container_memory_bytes",
+    "Per-container memory usage.",
+);
+
+// ── Rendering ────────────────────────────────────────────────
+
 /// Render all metrics in Prometheus text exposition format.
 fn render_metrics(snap: &MetricsSnapshot) -> String {
-    let mut out = String::with_capacity(4096);
+    let mut out = String::with_capacity(PROM_BUFFER_CAPACITY);
 
-    // Header
     out.push_str("# Sentinel System Monitor - Prometheus Metrics\n\n");
 
     if let Some(ref sys) = snap.system {
-        // ── CPU ────────────────────────────────────────────
-        out.push_str("# HELP sentinel_cpu_usage_percent Global CPU usage percentage.\n");
-        out.push_str("# TYPE sentinel_cpu_usage_percent gauge\n");
-        push_metric(
-            &mut out,
-            "sentinel_cpu_usage_percent",
-            &[],
-            sys.global_cpu_usage as f64,
-        );
-
-        out.push_str("# HELP sentinel_cpu_core_usage_percent Per-core CPU usage percentage.\n");
-        out.push_str("# TYPE sentinel_cpu_core_usage_percent gauge\n");
-        for (i, &usage) in sys.cpu_usages.iter().enumerate() {
-            push_metric(
-                &mut out,
-                "sentinel_cpu_core_usage_percent",
-                &[("core", &i.to_string())],
-                usage as f64,
-            );
-        }
-
-        out.push_str("# HELP sentinel_cpu_count Number of logical CPU cores.\n");
-        out.push_str("# TYPE sentinel_cpu_count gauge\n");
-        push_metric(&mut out, "sentinel_cpu_count", &[], sys.cpu_count as f64);
-
-        // ── Memory ─────────────────────────────────────────
-        out.push_str("# HELP sentinel_memory_total_bytes Total system memory in bytes.\n");
-        out.push_str("# TYPE sentinel_memory_total_bytes gauge\n");
-        push_metric(
-            &mut out,
-            "sentinel_memory_total_bytes",
-            &[],
-            sys.total_memory as f64,
-        );
-
-        out.push_str("# HELP sentinel_memory_used_bytes Used system memory in bytes.\n");
-        out.push_str("# TYPE sentinel_memory_used_bytes gauge\n");
-        push_metric(
-            &mut out,
-            "sentinel_memory_used_bytes",
-            &[],
-            sys.used_memory as f64,
-        );
-
-        out.push_str("# HELP sentinel_memory_usage_percent Memory usage percentage.\n");
-        out.push_str("# TYPE sentinel_memory_usage_percent gauge\n");
-        push_metric(
-            &mut out,
-            "sentinel_memory_usage_percent",
-            &[],
-            sys.memory_percent() as f64,
-        );
-
-        // ── Swap ───────────────────────────────────────────
-        out.push_str("# HELP sentinel_swap_total_bytes Total swap space in bytes.\n");
-        out.push_str("# TYPE sentinel_swap_total_bytes gauge\n");
-        push_metric(
-            &mut out,
-            "sentinel_swap_total_bytes",
-            &[],
-            sys.total_swap as f64,
-        );
-
-        out.push_str("# HELP sentinel_swap_used_bytes Used swap space in bytes.\n");
-        out.push_str("# TYPE sentinel_swap_used_bytes gauge\n");
-        push_metric(
-            &mut out,
-            "sentinel_swap_used_bytes",
-            &[],
-            sys.used_swap as f64,
-        );
-
-        // ── Load Averages ──────────────────────────────────
-        out.push_str("# HELP sentinel_load_average System load averages.\n");
-        out.push_str("# TYPE sentinel_load_average gauge\n");
-        push_metric(
-            &mut out,
-            "sentinel_load_average",
-            &[("period", "1m")],
-            sys.load_avg_1,
-        );
-        push_metric(
-            &mut out,
-            "sentinel_load_average",
-            &[("period", "5m")],
-            sys.load_avg_5,
-        );
-        push_metric(
-            &mut out,
-            "sentinel_load_average",
-            &[("period", "15m")],
-            sys.load_avg_15,
-        );
-
-        // ── Uptime ─────────────────────────────────────────
-        out.push_str("# HELP sentinel_uptime_seconds System uptime in seconds.\n");
-        out.push_str("# TYPE sentinel_uptime_seconds gauge\n");
-        push_metric(&mut out, "sentinel_uptime_seconds", &[], sys.uptime as f64);
-
-        // ── Network I/O ────────────────────────────────────
-        out.push_str(
-            "# HELP sentinel_network_rx_bytes_total Total received bytes per interface.\n",
-        );
-        out.push_str("# TYPE sentinel_network_rx_bytes_total counter\n");
-        for net in &sys.networks {
-            push_metric(
-                &mut out,
-                "sentinel_network_rx_bytes_total",
-                &[("interface", &net.name)],
-                net.total_rx as f64,
-            );
-        }
-        out.push_str(
-            "# HELP sentinel_network_tx_bytes_total Total transmitted bytes per interface.\n",
-        );
-        out.push_str("# TYPE sentinel_network_tx_bytes_total counter\n");
-        for net in &sys.networks {
-            push_metric(
-                &mut out,
-                "sentinel_network_tx_bytes_total",
-                &[("interface", &net.name)],
-                net.total_tx as f64,
-            );
-        }
-
-        // ── Disk Usage ─────────────────────────────────────
-        out.push_str("# HELP sentinel_disk_total_bytes Total disk space in bytes.\n");
-        out.push_str("# TYPE sentinel_disk_total_bytes gauge\n");
-        out.push_str("# HELP sentinel_disk_available_bytes Available disk space in bytes.\n");
-        out.push_str("# TYPE sentinel_disk_available_bytes gauge\n");
-        out.push_str("# HELP sentinel_disk_read_bytes_per_sec Disk read throughput.\n");
-        out.push_str("# TYPE sentinel_disk_read_bytes_per_sec gauge\n");
-        out.push_str("# HELP sentinel_disk_write_bytes_per_sec Disk write throughput.\n");
-        out.push_str("# TYPE sentinel_disk_write_bytes_per_sec gauge\n");
-        for disk in &sys.disks {
-            let labels = [("mount", &*disk.mount_point), ("fstype", &*disk.fs_type)];
-            push_metric(
-                &mut out,
-                "sentinel_disk_total_bytes",
-                &labels,
-                disk.total_space as f64,
-            );
-            push_metric(
-                &mut out,
-                "sentinel_disk_available_bytes",
-                &labels,
-                disk.available_space as f64,
-            );
-            push_metric(
-                &mut out,
-                "sentinel_disk_read_bytes_per_sec",
-                &labels,
-                disk.read_bytes_per_sec as f64,
-            );
-            push_metric(
-                &mut out,
-                "sentinel_disk_write_bytes_per_sec",
-                &labels,
-                disk.write_bytes_per_sec as f64,
-            );
-        }
-
-        // ── CPU Temperature ────────────────────────────────
-        if let Some(ref temp) = sys.cpu_temp {
-            if let Some(pkg) = temp.package_temp {
-                out.push_str("# HELP sentinel_cpu_temp_celsius CPU package temperature.\n");
-                out.push_str("# TYPE sentinel_cpu_temp_celsius gauge\n");
-                push_metric(
-                    &mut out,
-                    "sentinel_cpu_temp_celsius",
-                    &[("sensor", "package")],
-                    pkg as f64,
-                );
-            }
-            for (i, &core_t) in temp.core_temps.iter().enumerate() {
-                push_metric(
-                    &mut out,
-                    "sentinel_cpu_temp_celsius",
-                    &[("sensor", &format!("core{}", i))],
-                    core_t as f64,
-                );
-            }
-        }
-
-        // ── GPU ────────────────────────────────────────────
-        if let Some(ref gpu) = sys.gpu {
-            out.push_str("# HELP sentinel_gpu_utilization_percent GPU utilization.\n");
-            out.push_str("# TYPE sentinel_gpu_utilization_percent gauge\n");
-            push_metric(
-                &mut out,
-                "sentinel_gpu_utilization_percent",
-                &[("gpu", &gpu.name)],
-                gpu.utilization as f64,
-            );
-
-            out.push_str("# HELP sentinel_gpu_memory_used_bytes GPU memory used.\n");
-            out.push_str("# TYPE sentinel_gpu_memory_used_bytes gauge\n");
-            push_metric(
-                &mut out,
-                "sentinel_gpu_memory_used_bytes",
-                &[("gpu", &gpu.name)],
-                gpu.memory_used as f64,
-            );
-
-            out.push_str("# HELP sentinel_gpu_memory_total_bytes GPU memory total.\n");
-            out.push_str("# TYPE sentinel_gpu_memory_total_bytes gauge\n");
-            push_metric(
-                &mut out,
-                "sentinel_gpu_memory_total_bytes",
-                &[("gpu", &gpu.name)],
-                gpu.memory_total as f64,
-            );
-
-            out.push_str("# HELP sentinel_gpu_temp_celsius GPU temperature.\n");
-            out.push_str("# TYPE sentinel_gpu_temp_celsius gauge\n");
-            push_metric(
-                &mut out,
-                "sentinel_gpu_temp_celsius",
-                &[("gpu", &gpu.name)],
-                gpu.temperature as f64,
-            );
-
-            out.push_str("# HELP sentinel_gpu_power_watts GPU power draw.\n");
-            out.push_str("# TYPE sentinel_gpu_power_watts gauge\n");
-            push_metric(
-                &mut out,
-                "sentinel_gpu_power_watts",
-                &[("gpu", &gpu.name)],
-                gpu.power_draw as f64,
-            );
-
-            if let Some(fan) = gpu.fan_speed {
-                out.push_str("# HELP sentinel_gpu_fan_speed_percent GPU fan speed.\n");
-                out.push_str("# TYPE sentinel_gpu_fan_speed_percent gauge\n");
-                push_metric(
-                    &mut out,
-                    "sentinel_gpu_fan_speed_percent",
-                    &[("gpu", &gpu.name)],
-                    fan as f64,
-                );
-            }
-        }
-
-        // ── Battery ────────────────────────────────────────
-        if let Some(ref bat) = sys.battery {
-            out.push_str("# HELP sentinel_battery_percent Battery charge percentage.\n");
-            out.push_str("# TYPE sentinel_battery_percent gauge\n");
-            push_metric(
-                &mut out,
-                "sentinel_battery_percent",
-                &[],
-                bat.percent as f64,
-            );
-        }
+        render_system_metrics(&mut out, sys);
     }
 
-    // ── Process Count ──────────────────────────────────
-    out.push_str("# HELP sentinel_process_count Total number of tracked processes.\n");
-    out.push_str("# TYPE sentinel_process_count gauge\n");
-    push_metric(
-        &mut out,
-        "sentinel_process_count",
-        &[],
-        snap.process_count as f64,
-    );
-
-    // ── Alerts ─────────────────────────────────────────
-    out.push_str("# HELP sentinel_alert_count Number of active alerts by severity.\n");
-    out.push_str("# TYPE sentinel_alert_count gauge\n");
-    let mut info = 0u64;
-    let mut warn = 0u64;
-    let mut crit = 0u64;
-    let mut danger = 0u64;
-    for alert in &snap.alerts {
-        match alert.severity {
-            AlertSeverity::Info => info += 1,
-            AlertSeverity::Warning => warn += 1,
-            AlertSeverity::Critical => crit += 1,
-            AlertSeverity::Danger => danger += 1,
-        }
-    }
-    push_metric(
-        &mut out,
-        "sentinel_alert_count",
-        &[("severity", "info")],
-        info as f64,
-    );
-    push_metric(
-        &mut out,
-        "sentinel_alert_count",
-        &[("severity", "warning")],
-        warn as f64,
-    );
-    push_metric(
-        &mut out,
-        "sentinel_alert_count",
-        &[("severity", "critical")],
-        crit as f64,
-    );
-    push_metric(
-        &mut out,
-        "sentinel_alert_count",
-        &[("severity", "danger")],
-        danger as f64,
-    );
-
-    out.push_str("# HELP sentinel_alert_total Total number of active alerts.\n");
-    out.push_str("# TYPE sentinel_alert_total gauge\n");
-    push_metric(
-        &mut out,
-        "sentinel_alert_total",
-        &[],
-        snap.alerts.len() as f64,
-    );
-
-    // ── Docker Containers ──────────────────────────────
-    if !snap.containers.is_empty() {
-        let running = snap
-            .containers
-            .iter()
-            .filter(|c| c.state == "running")
-            .count();
-        let total = snap.containers.len();
-
-        out.push_str("# HELP sentinel_docker_containers_total Total Docker containers.\n");
-        out.push_str("# TYPE sentinel_docker_containers_total gauge\n");
-        push_metric(
-            &mut out,
-            "sentinel_docker_containers_total",
-            &[],
-            total as f64,
-        );
-
-        out.push_str("# HELP sentinel_docker_containers_running Running Docker containers.\n");
-        out.push_str("# TYPE sentinel_docker_containers_running gauge\n");
-        push_metric(
-            &mut out,
-            "sentinel_docker_containers_running",
-            &[],
-            running as f64,
-        );
-
-        out.push_str("# HELP sentinel_docker_container_cpu_percent Per-container CPU usage.\n");
-        out.push_str("# TYPE sentinel_docker_container_cpu_percent gauge\n");
-        out.push_str("# HELP sentinel_docker_container_memory_bytes Per-container memory usage.\n");
-        out.push_str("# TYPE sentinel_docker_container_memory_bytes gauge\n");
-        for c in &snap.containers {
-            if c.state == "running" {
-                push_metric(
-                    &mut out,
-                    "sentinel_docker_container_cpu_percent",
-                    &[("name", &c.name), ("image", &c.image)],
-                    c.cpu_percent,
-                );
-                push_metric(
-                    &mut out,
-                    "sentinel_docker_container_memory_bytes",
-                    &[("name", &c.name), ("image", &c.image)],
-                    c.memory_usage as f64,
-                );
-            }
-        }
-    }
+    render_process_and_alert_metrics(&mut out, snap);
+    render_docker_metrics(&mut out, snap);
 
     out
+}
+
+fn render_system_metrics(out: &mut String, sys: &SystemSnapshot) {
+    // CPU
+    M_CPU_USAGE.emit(out, sys.global_cpu_usage as f64);
+
+    M_CPU_CORE.write_header(out);
+    for (i, &usage) in sys.cpu_usages.iter().enumerate() {
+        push_metric(
+            out,
+            M_CPU_CORE.name,
+            &[("core", &i.to_string())],
+            usage as f64,
+        );
+    }
+
+    M_CPU_COUNT.emit(out, sys.cpu_count as f64);
+
+    // Memory
+    M_MEM_TOTAL.emit(out, sys.total_memory as f64);
+    M_MEM_USED.emit(out, sys.used_memory as f64);
+    M_MEM_PCT.emit(out, sys.memory_percent() as f64);
+
+    // Swap
+    M_SWAP_TOTAL.emit(out, sys.total_swap as f64);
+    M_SWAP_USED.emit(out, sys.used_swap as f64);
+
+    // Load averages
+    M_LOAD.write_header(out);
+    push_metric(out, M_LOAD.name, &[("period", "1m")], sys.load_avg_1);
+    push_metric(out, M_LOAD.name, &[("period", "5m")], sys.load_avg_5);
+    push_metric(out, M_LOAD.name, &[("period", "15m")], sys.load_avg_15);
+
+    // Uptime
+    M_UPTIME.emit(out, sys.uptime as f64);
+
+    // Network I/O
+    M_NET_RX.write_header(out);
+    for net in &sys.networks {
+        push_metric(
+            out,
+            M_NET_RX.name,
+            &[("interface", &net.name)],
+            net.total_rx as f64,
+        );
+    }
+    M_NET_TX.write_header(out);
+    for net in &sys.networks {
+        push_metric(
+            out,
+            M_NET_TX.name,
+            &[("interface", &net.name)],
+            net.total_tx as f64,
+        );
+    }
+
+    // Disk usage
+    M_DISK_TOTAL.write_header(out);
+    M_DISK_AVAIL.write_header(out);
+    M_DISK_READ.write_header(out);
+    M_DISK_WRITE.write_header(out);
+    for disk in &sys.disks {
+        let labels = [("mount", &*disk.mount_point), ("fstype", &*disk.fs_type)];
+        push_metric(out, M_DISK_TOTAL.name, &labels, disk.total_space as f64);
+        push_metric(out, M_DISK_AVAIL.name, &labels, disk.available_space as f64);
+        push_metric(
+            out,
+            M_DISK_READ.name,
+            &labels,
+            disk.read_bytes_per_sec as f64,
+        );
+        push_metric(
+            out,
+            M_DISK_WRITE.name,
+            &labels,
+            disk.write_bytes_per_sec as f64,
+        );
+    }
+
+    // CPU temperature
+    if let Some(ref temp) = sys.cpu_temp {
+        M_CPU_TEMP.write_header(out);
+        if let Some(pkg) = temp.package_temp {
+            push_metric(out, M_CPU_TEMP.name, &[("sensor", "package")], pkg as f64);
+        }
+        for (i, &core_t) in temp.core_temps.iter().enumerate() {
+            push_metric(
+                out,
+                M_CPU_TEMP.name,
+                &[("sensor", &format!("core{}", i))],
+                core_t as f64,
+            );
+        }
+    }
+
+    // GPU
+    if let Some(ref gpu) = sys.gpu {
+        let gpu_label = [("gpu", &*gpu.name)];
+        M_GPU_UTIL.emit_labeled(out, &gpu_label, gpu.utilization as f64);
+        M_GPU_MEM_USED.emit_labeled(out, &gpu_label, gpu.memory_used as f64);
+        M_GPU_MEM_TOTAL.emit_labeled(out, &gpu_label, gpu.memory_total as f64);
+        M_GPU_TEMP.emit_labeled(out, &gpu_label, gpu.temperature as f64);
+        M_GPU_POWER.emit_labeled(out, &gpu_label, gpu.power_draw as f64);
+        if let Some(fan) = gpu.fan_speed {
+            M_GPU_FAN.emit_labeled(out, &gpu_label, fan as f64);
+        }
+    }
+
+    // Battery
+    if let Some(ref bat) = sys.battery {
+        M_BATTERY.emit(out, bat.percent as f64);
+    }
+}
+
+fn render_process_and_alert_metrics(out: &mut String, snap: &MetricsSnapshot) {
+    M_PROC_COUNT.emit(out, snap.process_count as f64);
+
+    // Alerts by severity
+    M_ALERT_COUNT.write_header(out);
+    let mut counts = [0u64; 4]; // info, warn, crit, danger
+    for alert in &snap.alerts {
+        match alert.severity {
+            AlertSeverity::Info => counts[0] += 1,
+            AlertSeverity::Warning => counts[1] += 1,
+            AlertSeverity::Critical => counts[2] += 1,
+            AlertSeverity::Danger => counts[3] += 1,
+        }
+    }
+    for (label, count) in [
+        ("info", counts[0]),
+        ("warning", counts[1]),
+        ("critical", counts[2]),
+        ("danger", counts[3]),
+    ] {
+        push_metric(
+            out,
+            M_ALERT_COUNT.name,
+            &[("severity", label)],
+            count as f64,
+        );
+    }
+
+    M_ALERT_TOTAL.emit(out, snap.alerts.len() as f64);
+}
+
+fn render_docker_metrics(out: &mut String, snap: &MetricsSnapshot) {
+    if snap.containers.is_empty() {
+        return;
+    }
+
+    let running = snap
+        .containers
+        .iter()
+        .filter(|c| c.state == "running")
+        .count();
+    M_DOCKER_TOTAL.emit(out, snap.containers.len() as f64);
+    M_DOCKER_RUNNING.emit(out, running as f64);
+
+    M_DOCKER_CPU.write_header(out);
+    M_DOCKER_MEM.write_header(out);
+    for c in &snap.containers {
+        if c.state == "running" {
+            let labels = [("name", &*c.name), ("image", &*c.image)];
+            push_metric(out, M_DOCKER_CPU.name, &labels, c.cpu_percent);
+            push_metric(out, M_DOCKER_MEM.name, &labels, c.memory_usage as f64);
+        }
+    }
 }
 
 /// Write a single Prometheus metric line with optional labels.
@@ -462,7 +409,6 @@ fn push_metric(out: &mut String, name: &str, labels: &[(&str, &str)], value: f64
             }
             out.push_str(k);
             out.push_str("=\"");
-            // Escape label values per Prometheus spec
             for ch in v.chars() {
                 match ch {
                     '\\' => out.push_str("\\\\"),
@@ -476,7 +422,6 @@ fn push_metric(out: &mut String, name: &str, labels: &[(&str, &str)], value: f64
         out.push('}');
     }
     out.push(' ');
-    // Format: use integer when possible, otherwise 6 decimal places
     if value.fract() == 0.0 && value.abs() < 1e15 {
         out.push_str(&(value as i64).to_string());
     } else {

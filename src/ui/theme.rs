@@ -1,6 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 
+use crate::constants::*;
 use crate::models::AlertSeverity;
 
 /// All available built-in theme names.
@@ -274,7 +275,7 @@ impl Theme {
     /// Discover custom themes from ~/.config/sentinel/themes/*.toml
     #[allow(dead_code)]
     pub fn load_custom_themes() -> Vec<Self> {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let home = crate::constants::home_dir();
         let themes_dir = std::path::PathBuf::from(home)
             .join(".config")
             .join("sentinel")
@@ -353,11 +354,11 @@ impl Theme {
 
     /// Returns a color for a usage percentage gauge.
     pub fn usage_color(&self, percent: f32) -> Color {
-        if percent >= 90.0 {
+        if percent >= USAGE_CRITICAL_PCT {
             self.gauge_critical
-        } else if percent >= 70.0 {
+        } else if percent >= USAGE_HIGH_PCT {
             self.gauge_high
-        } else if percent >= 40.0 {
+        } else if percent >= USAGE_MID_PCT {
             self.gauge_mid
         } else {
             self.gauge_low
@@ -366,11 +367,11 @@ impl Theme {
 
     /// Returns a color for temperature in Celsius.
     pub fn temp_color(&self, celsius: f32) -> Color {
-        if celsius >= 90.0 {
+        if celsius >= TEMP_CRITICAL_C {
             self.gauge_critical
-        } else if celsius >= 75.0 {
+        } else if celsius >= TEMP_HIGH_C {
             self.gauge_high
-        } else if celsius >= 60.0 {
+        } else if celsius >= TEMP_MID_C {
             self.gauge_mid
         } else {
             self.gauge_low
@@ -466,4 +467,180 @@ fn parse_color(opt: &Option<String>) -> Option<Color> {
     let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
     let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
     Some(Color::Rgb(r, g, b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_color ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_color_with_hash() {
+        let c = parse_color(&Some("#FF8800".to_string()));
+        assert_eq!(c, Some(Color::Rgb(255, 136, 0)));
+    }
+
+    #[test]
+    fn parse_color_without_hash() {
+        let c = parse_color(&Some("FF8800".to_string()));
+        assert_eq!(c, Some(Color::Rgb(255, 136, 0)));
+    }
+
+    #[test]
+    fn parse_color_black() {
+        let c = parse_color(&Some("#000000".to_string()));
+        assert_eq!(c, Some(Color::Rgb(0, 0, 0)));
+    }
+
+    #[test]
+    fn parse_color_white() {
+        let c = parse_color(&Some("#FFFFFF".to_string()));
+        assert_eq!(c, Some(Color::Rgb(255, 255, 255)));
+    }
+
+    #[test]
+    fn parse_color_lowercase() {
+        let c = parse_color(&Some("#ff8800".to_string()));
+        assert_eq!(c, Some(Color::Rgb(255, 136, 0)));
+    }
+
+    #[test]
+    fn parse_color_none() {
+        assert_eq!(parse_color(&None), None);
+    }
+
+    #[test]
+    fn parse_color_invalid_length() {
+        assert_eq!(parse_color(&Some("#FFF".to_string())), None);
+        assert_eq!(parse_color(&Some("#FFFFFFF".to_string())), None);
+    }
+
+    #[test]
+    fn parse_color_invalid_hex() {
+        assert_eq!(parse_color(&Some("#GGHHII".to_string())), None);
+    }
+
+    // ── by_name ───────────────────────────────────────────────────
+
+    #[test]
+    fn by_name_all_builtins() {
+        for &name in BUILTIN_THEME_NAMES {
+            let theme = Theme::by_name(name);
+            assert!(theme.is_some(), "Theme '{}' should exist", name);
+            assert_eq!(theme.unwrap().name, name);
+        }
+    }
+
+    #[test]
+    fn by_name_case_insensitive() {
+        assert!(Theme::by_name("DEFAULT").is_some());
+        assert!(Theme::by_name("Gruvbox").is_some());
+        assert!(Theme::by_name("NORD").is_some());
+    }
+
+    #[test]
+    fn by_name_unknown() {
+        assert!(Theme::by_name("nonexistent").is_none());
+        assert!(Theme::by_name("").is_none());
+    }
+
+    // ── next_builtin ──────────────────────────────────────────────
+
+    #[test]
+    fn next_builtin_cycles_through_all() {
+        let mut theme = Theme::default_dark();
+        let mut names = vec![theme.name.clone()];
+        for _ in 0..BUILTIN_THEME_NAMES.len() - 1 {
+            theme = theme.next_builtin();
+            names.push(theme.name.clone());
+        }
+        // Should have visited all 6 themes
+        assert_eq!(names.len(), BUILTIN_THEME_NAMES.len());
+        for &expected in BUILTIN_THEME_NAMES {
+            assert!(
+                names.contains(&expected.to_string()),
+                "Missing theme: {}",
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn next_builtin_wraps_around() {
+        let mut theme = Theme::default_dark();
+        // Cycle through all themes + 1 to verify wrap
+        for _ in 0..BUILTIN_THEME_NAMES.len() {
+            theme = theme.next_builtin();
+        }
+        assert_eq!(theme.name, "default");
+    }
+
+    // ── usage_color ───────────────────────────────────────────────
+
+    #[test]
+    fn usage_color_low() {
+        let t = Theme::default_dark();
+        assert_eq!(t.usage_color(10.0), t.gauge_low);
+        assert_eq!(t.usage_color(39.9), t.gauge_low);
+    }
+
+    #[test]
+    fn usage_color_mid() {
+        let t = Theme::default_dark();
+        assert_eq!(t.usage_color(40.0), t.gauge_mid);
+        assert_eq!(t.usage_color(69.9), t.gauge_mid);
+    }
+
+    #[test]
+    fn usage_color_high() {
+        let t = Theme::default_dark();
+        assert_eq!(t.usage_color(70.0), t.gauge_high);
+        assert_eq!(t.usage_color(89.9), t.gauge_high);
+    }
+
+    #[test]
+    fn usage_color_critical() {
+        let t = Theme::default_dark();
+        assert_eq!(t.usage_color(90.0), t.gauge_critical);
+        assert_eq!(t.usage_color(100.0), t.gauge_critical);
+    }
+
+    // ── temp_color ────────────────────────────────────────────────
+
+    #[test]
+    fn temp_color_low() {
+        let t = Theme::default_dark();
+        assert_eq!(t.temp_color(30.0), t.gauge_low);
+        assert_eq!(t.temp_color(59.9), t.gauge_low);
+    }
+
+    #[test]
+    fn temp_color_mid() {
+        let t = Theme::default_dark();
+        assert_eq!(t.temp_color(60.0), t.gauge_mid);
+        assert_eq!(t.temp_color(74.9), t.gauge_mid);
+    }
+
+    #[test]
+    fn temp_color_high() {
+        let t = Theme::default_dark();
+        assert_eq!(t.temp_color(75.0), t.gauge_high);
+        assert_eq!(t.temp_color(89.9), t.gauge_high);
+    }
+
+    #[test]
+    fn temp_color_critical() {
+        let t = Theme::default_dark();
+        assert_eq!(t.temp_color(90.0), t.gauge_critical);
+        assert_eq!(t.temp_color(105.0), t.gauge_critical);
+    }
+
+    // ── Default trait ─────────────────────────────────────────────
+
+    #[test]
+    fn default_is_default_dark() {
+        let d = Theme::default();
+        assert_eq!(d.name, "default");
+    }
 }

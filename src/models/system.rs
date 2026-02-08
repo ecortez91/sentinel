@@ -124,3 +124,109 @@ impl SystemSnapshot {
         (self.used_swap as f32 / self.total_swap as f32) * 100.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_system(
+        used_mem: u64,
+        total_mem: u64,
+        used_swap: u64,
+        total_swap: u64,
+    ) -> SystemSnapshot {
+        SystemSnapshot {
+            total_memory: total_mem,
+            used_memory: used_mem,
+            total_swap,
+            used_swap,
+            cpu_count: 4,
+            cpu_usages: vec![50.0; 4],
+            global_cpu_usage: 50.0,
+            uptime: 3600,
+            hostname: "test".to_string(),
+            os_name: "Linux".to_string(),
+            load_avg_1: 1.0,
+            load_avg_5: 0.8,
+            load_avg_15: 0.5,
+            total_processes: 100,
+            networks: vec![],
+            disks: vec![],
+            cpu_temp: None,
+            gpu: None,
+            battery: None,
+        }
+    }
+
+    // ── memory_percent ────────────────────────────────────────────
+
+    #[test]
+    fn memory_percent_normal() {
+        let s = make_system(4 * 1024, 16 * 1024, 0, 0);
+        assert!((s.memory_percent() - 25.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn memory_percent_zero_total() {
+        let s = make_system(0, 0, 0, 0);
+        assert_eq!(s.memory_percent(), 0.0);
+    }
+
+    #[test]
+    fn memory_percent_full() {
+        let s = make_system(1000, 1000, 0, 0);
+        assert!((s.memory_percent() - 100.0).abs() < 0.01);
+    }
+
+    // ── swap_percent ──────────────────────────────────────────────
+
+    #[test]
+    fn swap_percent_normal() {
+        let s = make_system(0, 1000, 500, 2000);
+        assert!((s.swap_percent() - 25.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn swap_percent_zero_total() {
+        let s = make_system(0, 1000, 0, 0);
+        assert_eq!(s.swap_percent(), 0.0);
+    }
+
+    #[test]
+    fn swap_percent_full() {
+        let s = make_system(0, 1000, 8192, 8192);
+        assert!((s.swap_percent() - 100.0).abs() < 0.01);
+    }
+
+    // ── GpuInfo::memory_percent ───────────────────────────────────
+
+    fn make_gpu(used: u64, total: u64) -> GpuInfo {
+        GpuInfo {
+            name: "Test GPU".to_string(),
+            utilization: 50,
+            memory_used: used,
+            memory_total: total,
+            temperature: 65,
+            power_draw: 200.0,
+            fan_speed: Some(60),
+        }
+    }
+
+    #[test]
+    fn gpu_memory_percent_normal() {
+        let g = make_gpu(4096, 8192);
+        assert!((g.memory_percent() - 50.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn gpu_memory_percent_zero_total() {
+        let g = make_gpu(0, 0);
+        assert_eq!(g.memory_percent(), 0.0);
+    }
+
+    #[test]
+    fn gpu_memory_percent_full() {
+        let g = make_gpu(10240, 10240);
+        assert!((g.memory_percent() - 100.0).abs() < 0.01);
+    }
+}

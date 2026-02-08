@@ -1,13 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use crate::config::Config;
+use crate::constants::*;
 use crate::models::{
     Alert, AlertCategory, AlertSeverity, ProcessInfo, ProcessStatus, SystemSnapshot,
 };
-
-/// Cooldown period: don't re-fire the same (PID, category) alert within this window.
-const ALERT_COOLDOWN_SECS: u64 = 60;
 
 /// The alert detection engine. Analyzes process and system data
 /// to generate warnings, threats, and anomalies.
@@ -17,7 +15,7 @@ const ALERT_COOLDOWN_SECS: u64 = 60;
 pub struct AlertDetector {
     config: Config,
     /// Track memory over time per PID to detect leaks
-    memory_history: HashMap<u32, Vec<u64>>,
+    memory_history: HashMap<u32, VecDeque<u64>>,
     /// Max history entries per process
     max_history: usize,
     /// Cooldown tracking: (PID, category) -> last fire time
@@ -29,7 +27,7 @@ impl AlertDetector {
         Self {
             config,
             memory_history: HashMap::new(),
-            max_history: 30, // ~30 seconds of history at 1s interval
+            max_history: MAX_MEMORY_HISTORY, // ~30 seconds of history at 1s interval
             alert_cooldowns: HashMap::new(),
         }
     }
@@ -206,45 +204,48 @@ impl AlertDetector {
     }
 
     fn check_suspicious(&self, alerts: &mut Vec<Alert>, proc: &ProcessInfo) {
-        let name_lower = proc.name.to_lowercase();
-        let cmd_lower = proc.cmd.to_lowercase();
-
-        for pattern in &self.config.suspicious_patterns {
-            let pat = pattern.to_lowercase();
-            if name_lower.contains(&pat) || cmd_lower.contains(&pat) {
-                alerts.push(Alert::new(
-                    AlertSeverity::Warning,
-                    AlertCategory::Suspicious,
-                    &proc.name,
-                    proc.pid,
-                    format!(
-                        "Suspicious process detected: {} (matched '{}')",
-                        proc.name, pattern
-                    ),
-                    0.0,
-                    0.0,
-                ));
-                break;
-            }
-        }
+        self.check_patterns(
+            alerts,
+            proc,
+            &self.config.suspicious_patterns,
+            AlertSeverity::Warning,
+            AlertCategory::Suspicious,
+            "Suspicious process detected",
+        );
     }
 
     fn check_security_threats(&self, alerts: &mut Vec<Alert>, proc: &ProcessInfo) {
+        self.check_patterns(
+            alerts,
+            proc,
+            &self.config.security_threat_patterns,
+            AlertSeverity::Danger,
+            AlertCategory::SecurityThreat,
+            "SECURITY THREAT",
+        );
+    }
+
+    fn check_patterns(
+        &self,
+        alerts: &mut Vec<Alert>,
+        proc: &ProcessInfo,
+        patterns: &[String],
+        severity: AlertSeverity,
+        category: AlertCategory,
+        msg_prefix: &str,
+    ) {
         let name_lower = proc.name.to_lowercase();
         let cmd_lower = proc.cmd.to_lowercase();
 
-        for pattern in &self.config.security_threat_patterns {
+        for pattern in patterns {
             let pat = pattern.to_lowercase();
             if name_lower.contains(&pat) || cmd_lower.contains(&pat) {
                 alerts.push(Alert::new(
-                    AlertSeverity::Danger,
-                    AlertCategory::SecurityThreat,
+                    severity,
+                    category,
                     &proc.name,
                     proc.pid,
-                    format!(
-                        "SECURITY THREAT: {} matches known threat pattern '{}'",
-                        proc.name, pattern
-                    ),
+                    format!("{}: {} (matched '{}')", msg_prefix, proc.name, pattern),
                     0.0,
                     0.0,
                 ));
@@ -255,21 +256,23 @@ impl AlertDetector {
 
     fn check_memory_leak(&mut self, alerts: &mut Vec<Alert>, proc: &ProcessInfo) {
         let history = self.memory_history.entry(proc.pid).or_default();
-        history.push(proc.memory_bytes);
+        history.push_back(proc.memory_bytes);
 
-        if history.len() > self.max_history {
-            history.remove(0);
+        while history.len() > self.max_history {
+            history.pop_front();
         }
 
-        // Need at least 10 samples to detect a trend
-        if history.len() >= 10 {
-            let first_half_avg: f64 = history[..history.len() / 2].iter().sum::<u64>() as f64
-                / (history.len() / 2) as f64;
-            let second_half_avg: f64 = history[history.len() / 2..].iter().sum::<u64>() as f64
-                / (history.len() - history.len() / 2) as f64;
+        // Need at least LEAK_MIN_SAMPLES samples to detect a trend
+        if history.len() >= LEAK_MIN_SAMPLES {
+            let slice: Vec<u64> = history.iter().copied().collect();
+            let first_half_avg: f64 =
+                slice[..slice.len() / 2].iter().sum::<u64>() as f64 / (slice.len() / 2) as f64;
+            let second_half_avg: f64 = slice[slice.len() / 2..].iter().sum::<u64>() as f64
+                / (slice.len() - slice.len() / 2) as f64;
 
-            // If memory grew by >20% consistently
-            if second_half_avg > first_half_avg * 1.2 && proc.memory_bytes > 100 * 1024 * 1024 {
+            if second_half_avg > first_half_avg * LEAK_GROWTH_FACTOR
+                && proc.memory_bytes > LEAK_MIN_MEMORY_BYTES
+            {
                 let growth_pct = ((second_half_avg - first_half_avg) / first_half_avg) * 100.0;
                 alerts.push(Alert::new(
                     AlertSeverity::Warning,
@@ -281,7 +284,7 @@ impl AlertDetector {
                         proc.name, growth_pct
                     ),
                     growth_pct,
-                    20.0,
+                    LEAK_ALERT_THRESHOLD_PCT,
                 ));
             }
         }
@@ -289,8 +292,7 @@ impl AlertDetector {
 
     fn check_high_disk_io(&self, alerts: &mut Vec<Alert>, proc: &ProcessInfo) {
         let total_io = proc.disk_read_bytes + proc.disk_write_bytes;
-        let threshold = 500 * 1024 * 1024; // 500 MiB
-        if total_io > threshold {
+        if total_io > HIGH_DISK_IO_THRESHOLD {
             alerts.push(Alert::new(
                 AlertSeverity::Info,
                 AlertCategory::HighDiskIo,
@@ -303,7 +305,7 @@ impl AlertDetector {
                     proc.disk_write_display(),
                 ),
                 total_io as f64,
-                threshold as f64,
+                HIGH_DISK_IO_THRESHOLD as f64,
             ));
         }
     }

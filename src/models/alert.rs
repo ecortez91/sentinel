@@ -98,3 +98,101 @@ impl Alert {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── AlertSeverity Display ─────────────────────────────────────
+
+    #[test]
+    fn severity_display() {
+        assert_eq!(AlertSeverity::Info.to_string(), "INFO");
+        assert_eq!(AlertSeverity::Warning.to_string(), "WARN");
+        assert_eq!(AlertSeverity::Critical.to_string(), "CRIT");
+        assert_eq!(AlertSeverity::Danger.to_string(), "DANGER");
+    }
+
+    #[test]
+    fn severity_ordering() {
+        // Info < Warning < Critical < Danger
+        assert!(AlertSeverity::Info < AlertSeverity::Warning);
+        assert!(AlertSeverity::Warning < AlertSeverity::Critical);
+        assert!(AlertSeverity::Critical < AlertSeverity::Danger);
+    }
+
+    // ── AlertCategory Display ─────────────────────────────────────
+
+    #[test]
+    fn category_display() {
+        assert_eq!(AlertCategory::HighCpu.to_string(), "CPU");
+        assert_eq!(AlertCategory::HighMemory.to_string(), "MEM");
+        assert_eq!(AlertCategory::HighDiskIo.to_string(), "DISK");
+        assert_eq!(AlertCategory::Zombie.to_string(), "ZOMBIE");
+        assert_eq!(AlertCategory::Suspicious.to_string(), "SUSPECT");
+        assert_eq!(AlertCategory::SystemOverload.to_string(), "OVERLOAD");
+        assert_eq!(AlertCategory::MemoryLeak.to_string(), "LEAK");
+        assert_eq!(AlertCategory::SecurityThreat.to_string(), "SECURITY");
+    }
+
+    // ── Alert::new ────────────────────────────────────────────────
+
+    #[test]
+    fn alert_new_fields() {
+        let alert = Alert::new(
+            AlertSeverity::Warning,
+            AlertCategory::HighCpu,
+            "firefox",
+            1234,
+            "CPU usage high".to_string(),
+            85.5,
+            50.0,
+        );
+        assert_eq!(alert.severity, AlertSeverity::Warning);
+        assert_eq!(alert.category, AlertCategory::HighCpu);
+        assert_eq!(alert.process_name, "firefox");
+        assert_eq!(alert.pid, 1234);
+        assert_eq!(alert.message, "CPU usage high");
+        assert!((alert.value - 85.5).abs() < f64::EPSILON);
+        assert!((alert.threshold - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn alert_timestamp_is_recent() {
+        let before = Local::now();
+        let alert = Alert::new(
+            AlertSeverity::Info,
+            AlertCategory::Zombie,
+            "test",
+            1,
+            "msg".to_string(),
+            0.0,
+            0.0,
+        );
+        let after = Local::now();
+        assert!(alert.timestamp >= before);
+        assert!(alert.timestamp <= after);
+    }
+
+    // ── Alert::age_display ────────────────────────────────────────
+
+    #[test]
+    fn age_display_just_created() {
+        let alert = Alert::new(
+            AlertSeverity::Info,
+            AlertCategory::HighCpu,
+            "test",
+            1,
+            "msg".to_string(),
+            0.0,
+            0.0,
+        );
+        let display = alert.age_display();
+        // Should be "0s ago" or "1s ago" depending on timing
+        assert!(
+            display.ends_with("s ago"),
+            "Expected seconds, got: {}",
+            display
+        );
+    }
+}

@@ -1,4 +1,6 @@
+use crate::constants::*;
 use crate::models::{format_bytes, Alert, AlertSeverity, ProcessInfo, SystemSnapshot};
+use crate::utils::truncate_str;
 
 /// Builds a rich system context string from live data for the LLM.
 ///
@@ -14,7 +16,7 @@ impl ContextBuilder {
         processes: &[ProcessInfo],
         alerts: &[Alert],
     ) -> String {
-        let mut ctx = String::with_capacity(8192);
+        let mut ctx = String::with_capacity(CONTEXT_INITIAL_CAPACITY);
 
         ctx.push_str("=== LIVE SYSTEM STATE ===\n\n");
 
@@ -105,7 +107,10 @@ impl ContextBuilder {
         }
 
         // ── Top Processes by CPU ───────────────────────────────
-        ctx.push_str("## Top 25 Processes by CPU Usage\n");
+        ctx.push_str(&format!(
+            "## Top {} Processes by CPU Usage\n",
+            CONTEXT_TOP_CPU_COUNT
+        ));
         ctx.push_str(&format!(
             "{:<8} {:<25} {:>7} {:>12} {:>7} {:>10} {:>10} {:<10} {}\n",
             "PID", "NAME", "CPU%", "MEMORY", "MEM%", "DISK_R", "DISK_W", "STATUS", "COMMAND"
@@ -120,24 +125,27 @@ impl ContextBuilder {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        for p in by_cpu.iter().take(25) {
+        for p in by_cpu.iter().take(CONTEXT_TOP_CPU_COUNT) {
             ctx.push_str(&format!(
                 "{:<8} {:<25} {:>6.1}% {:>12} {:>6.1}% {:>10} {:>10} {:<10} {}\n",
                 p.pid,
-                truncate(&p.name, 25),
+                truncate_str(&p.name, 25),
                 p.cpu_usage,
                 p.memory_display(),
                 p.memory_percent,
                 p.disk_read_display(),
                 p.disk_write_display(),
                 p.status.to_string(),
-                truncate(&p.cmd, 80),
+                truncate_str(&p.cmd, 80),
             ));
         }
         ctx.push('\n');
 
         // ── Top Processes by Memory ────────────────────────────
-        ctx.push_str("## Top 15 Processes by Memory Usage\n");
+        ctx.push_str(&format!(
+            "## Top {} Processes by Memory Usage\n",
+            CONTEXT_TOP_MEM_COUNT
+        ));
         ctx.push_str(&format!(
             "{:<8} {:<25} {:>12} {:>7} {:>7}\n",
             "PID", "NAME", "MEMORY", "MEM%", "CPU%"
@@ -148,11 +156,11 @@ impl ContextBuilder {
         let mut by_mem = processes.to_vec();
         by_mem.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes));
 
-        for p in by_mem.iter().take(15) {
+        for p in by_mem.iter().take(CONTEXT_TOP_MEM_COUNT) {
             ctx.push_str(&format!(
                 "{:<8} {:<25} {:>12} {:>6.1}% {:>6.1}%\n",
                 p.pid,
-                truncate(&p.name, 25),
+                truncate_str(&p.name, 25),
                 p.memory_display(),
                 p.memory_percent,
                 p.cpu_usage,
@@ -169,10 +177,10 @@ impl ContextBuilder {
         ));
         ctx.push_str(&"-".repeat(55));
         ctx.push('\n');
-        for (name, count, cpu, mem) in groups.iter().take(20) {
+        for (name, count, cpu, mem) in groups.iter().take(CONTEXT_MAX_GROUPS) {
             ctx.push_str(&format!(
                 "{:<25} {:>6} {:>7.1}% {:>12}\n",
-                truncate(name, 25),
+                truncate_str(name, 25),
                 count,
                 cpu,
                 format_bytes(*mem),
@@ -183,7 +191,7 @@ impl ContextBuilder {
         // ── Active Alerts ──────────────────────────────────────
         if !alerts.is_empty() {
             ctx.push_str("## Active Alerts (most recent first)\n");
-            for (i, a) in alerts.iter().take(30).enumerate() {
+            for (i, a) in alerts.iter().take(CONTEXT_MAX_ALERTS).enumerate() {
                 ctx.push_str(&format!(
                     "{}. [{}][{}] {} (PID:{}) at {}\n",
                     i + 1,
@@ -237,10 +245,10 @@ impl ContextBuilder {
                     .filter(|n| n.total_rx + n.total_tx > 0)
                     .collect();
                 nets.sort_by(|a, b| (b.total_rx + b.total_tx).cmp(&(a.total_rx + a.total_tx)));
-                for n in nets.iter().take(10) {
+                for n in nets.iter().take(CONTEXT_MAX_NET_INTERFACES) {
                     ctx.push_str(&format!(
                         "{:<16} {:>12} {:>12} {:>14} {:>14}\n",
-                        truncate(&n.name, 16),
+                        truncate_str(&n.name, 16),
                         format_bytes(n.rx_bytes),
                         format_bytes(n.tx_bytes),
                         format_bytes(n.total_rx),
@@ -267,7 +275,7 @@ impl ContextBuilder {
                     };
                     ctx.push_str(&format!(
                         "{:<20} {:>12} {:>12} {:>6.1}% {:<10}\n",
-                        truncate(&d.mount_point, 20),
+                        truncate_str(&d.mount_point, 20),
                         format_bytes(used),
                         format_bytes(d.total_space),
                         pct,
@@ -309,7 +317,7 @@ impl ContextBuilder {
                     p.name,
                     p.cpu_usage,
                     p.memory_display(),
-                    truncate(&p.cmd, 120),
+                    truncate_str(&p.cmd, CONTEXT_MAX_CMD_LEN),
                 ));
             }
             ctx.push('\n');
@@ -335,12 +343,4 @@ fn aggregate_by_name(processes: &[ProcessInfo]) -> Vec<(String, usize, f32, u64)
         .collect();
     sorted.sort_by(|a, b| b.3.cmp(&a.3)); // sort by total memory desc
     sorted
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max.saturating_sub(3)])
-    }
 }

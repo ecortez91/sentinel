@@ -58,7 +58,7 @@ impl Widget for GradientGauge<'_> {
                 } else if frac > 0.25 {
                     '░'
                 } else {
-                    '░'
+                    ' '
                 };
                 (partial, Style::default().fg(color))
             } else {

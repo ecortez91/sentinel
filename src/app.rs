@@ -1,0 +1,957 @@
+//! Application struct and event loop.
+//!
+//! Owns the terminal, state, collectors, and AI channels.
+//! Extracts the event loop from `main()` into a testable, well-structured unit.
+
+use std::io;
+use std::time::Duration;
+
+use anyhow::Result;
+use crossterm::{
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
+        MouseEventKind,
+    },
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{backend::CrosstermBackend, Terminal};
+use sysinfo::{Pid, Signal};
+use tokio::sync::mpsc;
+
+use crate::ai::client::AiEvent;
+use crate::ai::{ClaudeClient, ContextBuilder};
+use crate::alerts::AlertDetector;
+use crate::config::Config;
+use crate::constants::*;
+use crate::monitor::{ContainerInfo, DockerMonitor, SystemCollector};
+use crate::ui::{self, AppState, Tab};
+
+/// System prompt for auto-analysis (Dashboard insight card).
+const AUTO_ANALYSIS_PROMPT: &str = r#"You are Sentinel AI, a system analyst embedded in a terminal monitor.
+Analyze the live system data below and provide a brief health summary (4-6 bullet points max).
+
+Focus on
+- Overall system health (CPU, RAM, swap pressure)
+- Top resource consumers and whether they're normal
+- Any concerning patterns (memory leaks, zombies, high CPU)
+- Actionable recommendations if any
+
+Format: Use bullet points. Be concise - this appears in a small dashboard card.
+Do NOT use markdown headers. Start directly with bullet points."#;
+
+/// Build the system prompt dynamically using detected OS and hardware info.
+fn build_system_prompt(system: Option<&crate::models::SystemSnapshot>) -> String {
+    let os_name = system
+        .map(|s| s.os_name.clone())
+        .unwrap_or_else(|| "Unknown OS".to_string());
+    let total_ram = system
+        .map(|s| crate::models::format_bytes(s.total_memory))
+        .unwrap_or_else(|| "unknown".to_string());
+    let cpu_count = system.map(|s| s.cpu_count).unwrap_or(0);
+
+    format!(
+        r#"You are Sentinel AI, an expert system analyst embedded in a terminal process monitor.
+
+System: {} | {} RAM | {} CPU cores
+
+You have LIVE access to the user's system data including:
+- All running processes with CPU, memory, disk I/O, status, and command lines
+- System-wide CPU, RAM, swap usage and load averages
+- Network interfaces and filesystem usage
+- Active alerts and security warnings
+- Process groupings and aggregations
+
+Your role:
+1. Answer questions about what processes are doing, why they exist, and whether they're normal
+2. Identify resource hogs, memory leaks, and suspicious activity
+3. Explain technical concepts clearly (like what tokio-runtime-w, kworker, node workers are)
+4. Give actionable advice for managing system resources based on the actual hardware detected above
+5. Flag genuine security concerns vs benign processes
+
+Guidelines:
+- Be concise but thorough. This is a terminal - keep responses scannable.
+- Use bullet points and short paragraphs.
+- When explaining processes, mention what spawned them and whether they're safe.
+- If something looks genuinely dangerous, say so clearly.
+- If memory is tight, suggest what can be safely killed.
+- Reference specific PIDs and process names from the live data when relevant."#,
+        os_name, total_ram, cpu_count,
+    )
+}
+
+/// Main application struct.
+///
+/// Owns all runtime resources: terminal, state, data collectors, AI channels.
+pub struct App {
+    state: AppState,
+    collector: SystemCollector,
+    detector: AlertDetector,
+    claude_client: Option<ClaudeClient>,
+    has_key: bool,
+
+    // Channels
+    ai_tx: mpsc::UnboundedSender<AiEvent>,
+    ai_rx: mpsc::UnboundedReceiver<AiEvent>,
+    insight_tx: mpsc::UnboundedSender<AiEvent>,
+    insight_rx: mpsc::UnboundedReceiver<AiEvent>,
+    docker_rx: mpsc::UnboundedReceiver<Vec<ContainerInfo>>,
+
+    // Prometheus
+    shared_metrics: Option<crate::metrics::SharedMetrics>,
+
+    // Local loop state
+    filtering: bool,
+    ai_typing: bool,
+    last_insight_time: Option<std::time::Instant>,
+    insight_interval: Duration,
+    auto_analysis_enabled: bool,
+}
+
+impl App {
+    /// Create a new App, initializing all subsystems.
+    ///
+    /// This performs auth discovery, theme resolution, Docker setup,
+    /// and optional Prometheus server startup.
+    pub async fn new(
+        config: &Config,
+        no_ai: bool,
+        prometheus_addr: Option<&str>,
+    ) -> Result<Self> {
+        let collector = SystemCollector::new();
+        let detector = AlertDetector::new(config.clone());
+
+        // Auto-discover auth
+        let (auth, has_key) = if no_ai {
+            (None, false)
+        } else {
+            let a = ClaudeClient::discover_auth().await;
+            let has = a.is_some();
+            (a, has)
+        };
+        let auth_display = auth.as_ref().map(|a| a.display_name().to_string());
+        let claude_client = auth.map(ClaudeClient::new);
+
+        // Resolve theme
+        let initial_theme = ui::Theme::by_name(&config.theme)
+            .or_else(|| ui::Theme::from_toml_file(&custom_theme_path(&config.theme)))
+            .unwrap_or_default();
+
+        let mut state = AppState::new(config.max_alerts, has_key, initial_theme);
+        if let Some(method) = &auth_display {
+            state.ai_auth_method = method.clone();
+        }
+
+        // AI channels
+        let (ai_tx, ai_rx) = mpsc::unbounded_channel::<AiEvent>();
+        let (insight_tx, insight_rx) = mpsc::unbounded_channel::<AiEvent>();
+
+        // Docker monitoring
+        let docker = DockerMonitor::new();
+        state.docker_available = docker.is_available();
+        let (docker_tx, docker_rx) = mpsc::unbounded_channel::<Vec<ContainerInfo>>();
+
+        if docker.is_available() {
+            let tx = docker_tx.clone();
+            tokio::spawn(async move {
+                let docker = DockerMonitor::new();
+                loop {
+                    let containers = docker.list_containers().await;
+                    if tx.send(containers).is_err() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(DOCKER_POLL_SECS)).await;
+                }
+            });
+        }
+
+        // Prometheus metrics endpoint
+        let shared_metrics = if let Some(addr) = prometheus_addr {
+            match crate::metrics::start_server(addr) {
+                Ok(m) => {
+                    eprintln!("Prometheus metrics available at http://{}/metrics", addr);
+                    Some(m)
+                }
+                Err(e) => {
+                    eprintln!("Warning: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let insight_interval = Duration::from_secs(config.auto_analysis_interval_secs);
+        let auto_analysis_enabled = config.auto_analysis_interval_secs > 0;
+
+        Ok(Self {
+            state,
+            collector,
+            detector,
+            claude_client,
+            has_key,
+            ai_tx,
+            ai_rx,
+            insight_tx,
+            insight_rx,
+            docker_rx,
+            shared_metrics,
+            filtering: false,
+            ai_typing: false,
+            last_insight_time: None,
+            insight_interval,
+            auto_analysis_enabled,
+        })
+    }
+
+    /// Run the main event loop. Returns when the user quits.
+    pub async fn run(&mut self) -> Result<()> {
+        // Terminal init
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+        terminal.clear()?;
+
+        // Initial data collection
+        let (system, processes) = self.collector.collect();
+        let alerts_vec = self.detector.analyze(&system, &processes);
+        self.state.update(system, processes, alerts_vec);
+
+        // Main loop
+        loop {
+            terminal.draw(|frame| ui::render(frame, &self.state))?;
+
+            self.drain_ai_events();
+            self.drain_insight_events();
+            self.drain_docker_events();
+
+            if event::poll(Duration::from_millis(EVENT_POLL_MS))? {
+                let terminal_event = event::read()?;
+
+                if let Event::Mouse(mouse) = terminal_event {
+                    self.handle_mouse(mouse);
+                    continue;
+                }
+
+                if let Event::Key(key) = terminal_event {
+                    if self.handle_key(key) {
+                        break; // quit requested
+                    }
+                }
+            }
+
+            self.tick_refresh();
+            self.tick_auto_analysis();
+        }
+
+        // Cleanup
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+
+        println!("\n{}\n", t!("app.stopped"));
+        Ok(())
+    }
+
+    // ── Channel draining ─────────────────────────────────────────
+
+    fn drain_ai_events(&mut self) {
+        while let Ok(event) = self.ai_rx.try_recv() {
+            match event {
+                AiEvent::Chunk(text) => {
+                    self.state.ai_conversation.append_to_last_assistant(&text);
+                }
+                AiEvent::Done => {
+                    self.state.ai_loading = false;
+                }
+                AiEvent::Error(err) => {
+                    self.state.ai_loading = false;
+                    self.state
+                        .ai_conversation
+                        .add_system_message(&format!("Error: {}", err));
+                }
+            }
+        }
+    }
+
+    fn drain_insight_events(&mut self) {
+        while let Ok(event) = self.insight_rx.try_recv() {
+            match event {
+                AiEvent::Chunk(text) => {
+                    if let Some(ref mut insight) = self.state.ai_insight {
+                        insight.push_str(&text);
+                    } else {
+                        self.state.ai_insight = Some(text);
+                    }
+                }
+                AiEvent::Done => {
+                    self.state.ai_insight_loading = false;
+                    self.state.ai_insight_updated = Some(std::time::Instant::now());
+                }
+                AiEvent::Error(err) => {
+                    self.state.ai_insight_loading = false;
+                    self.state.ai_insight = Some(format!("Analysis failed: {}", err));
+                }
+            }
+        }
+    }
+
+    fn drain_docker_events(&mut self) {
+        while let Ok(containers) = self.docker_rx.try_recv() {
+            self.state.containers = containers;
+        }
+    }
+
+    // ── AI dispatch (deduplicated) ───────────────────────────────
+
+    /// Dispatch an AI streaming request on the chat channel.
+    ///
+    /// Builds context from live system data, prepares the system prompt,
+    /// and spawns an async task to stream the response.
+    fn dispatch_ai_chat(&self) {
+        let context = ContextBuilder::build(
+            self.state.system.as_ref(),
+            &self.state.processes,
+            &self.state.alerts,
+        );
+        let system_prompt = build_system_prompt(self.state.system.as_ref());
+        let full_system = format!(
+            "{}{}{}",
+            system_prompt, AI_CONTEXT_SEPARATOR, context
+        );
+        let messages = self.state.ai_conversation.to_api_messages();
+        let tx = self.ai_tx.clone();
+
+        tokio::spawn(async move {
+            let auth = ClaudeClient::discover_auth().await;
+            if let Some(auth) = auth {
+                let client = ClaudeClient::new(auth);
+                let _ = client.ask_streaming(&full_system, messages, tx).await;
+            }
+        });
+    }
+
+    /// Dispatch an auto-analysis request on the insight channel.
+    fn dispatch_insight(&self) {
+        let context = ContextBuilder::build(
+            self.state.system.as_ref(),
+            &self.state.processes,
+            &self.state.alerts,
+        );
+        let full_system = format!(
+            "{}{}{}",
+            AUTO_ANALYSIS_PROMPT, AI_CONTEXT_SEPARATOR_SHORT, context
+        );
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": "Analyze my system now. Give me a quick health check."
+        })];
+        let tx = self.insight_tx.clone();
+
+        tokio::spawn(async move {
+            let auth = ClaudeClient::discover_auth().await;
+            if let Some(auth) = auth {
+                let client = ClaudeClient::new(auth);
+                let _ = client.ask_streaming(&full_system, messages, tx).await;
+            }
+        });
+    }
+
+    // ── Signal sending (deduplicated) ────────────────────────────
+
+    /// Send SIGTERM to the currently selected process.
+    fn send_sigterm(&mut self) {
+        let filtered = self.state.filtered_processes();
+        if let Some(proc) = filtered.get(self.state.selected_process) {
+            let pid = proc.pid;
+            let name = proc.name.clone();
+            let sys = self.collector.system();
+            if let Some(process) = sys.process(Pid::from_u32(pid)) {
+                if process.kill_with(Signal::Term).unwrap_or(false) {
+                    self.state
+                        .set_status(format!("Sent SIGTERM to PID {} ({})", pid, name));
+                } else {
+                    self.state
+                        .set_status(format!("Failed to send SIGTERM to PID {} ({})", pid, name));
+                }
+            }
+        }
+    }
+
+    /// Send SIGKILL to the currently selected process.
+    fn send_sigkill(&mut self) {
+        let filtered = self.state.filtered_processes();
+        if let Some(proc) = filtered.get(self.state.selected_process) {
+            let pid = proc.pid;
+            let name = proc.name.clone();
+            let sys = self.collector.system();
+            if let Some(process) = sys.process(Pid::from_u32(pid)) {
+                if process.kill() {
+                    self.state
+                        .set_status(format!("Sent SIGKILL to PID {} ({})", pid, name));
+                } else {
+                    self.state
+                        .set_status(format!("Failed to send SIGKILL to PID {} ({})", pid, name));
+                }
+            }
+        }
+    }
+
+    // ── Mouse handling ───────────────────────────────────────────
+
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                if self.state.show_process_detail {
+                    if self.state.detail_scroll > 0 {
+                        self.state.detail_scroll -= 1;
+                    }
+                } else {
+                    self.state.scroll_up();
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if self.state.show_process_detail {
+                    self.state.detail_scroll += 1;
+                } else {
+                    self.state.scroll_down();
+                }
+            }
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                let x = mouse.column;
+                let y = mouse.row;
+
+                if self.state.show_process_detail {
+                    self.state.close_process_detail();
+                } else if self.state.show_help {
+                    self.state.show_help = false;
+                } else if y <= 2 && x >= TAB_BAR_X_OFFSET {
+                    let tab_x = (x - TAB_BAR_X_OFFSET) as usize;
+                    if tab_x < 13 {
+                        self.state.active_tab = Tab::Dashboard;
+                    } else if tab_x < 28 {
+                        self.state.active_tab = Tab::Processes;
+                    } else if tab_x < 40 {
+                        self.state.active_tab = Tab::Alerts;
+                    } else {
+                        self.state.active_tab = Tab::AskAi;
+                        self.ai_typing = true;
+                    }
+                } else if self.state.active_tab == Tab::Processes && y >= PROCESS_TABLE_ROW_START {
+                    let row_index = (y - PROCESS_TABLE_ROW_START) as usize;
+                    let max = if self.state.tree_view {
+                        self.state.tree_processes().len()
+                    } else {
+                        self.state.filtered_processes().len()
+                    };
+                    if row_index < max {
+                        self.state.selected_process = row_index;
+                    }
+                }
+            }
+            MouseEventKind::Down(crossterm::event::MouseButton::Right) => {
+                if self.state.active_tab == Tab::Processes
+                    && mouse.row >= PROCESS_TABLE_ROW_START
+                {
+                    let row_index = (mouse.row - PROCESS_TABLE_ROW_START) as usize;
+                    let proc_clone = {
+                        let filtered = self.state.filtered_processes();
+                        if row_index < filtered.len() {
+                            Some((*filtered[row_index]).clone())
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(proc) = proc_clone {
+                        self.state.selected_process = row_index;
+                        self.state.open_process_detail(&proc);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ── Keyboard handling ────────────────────────────────────────
+
+    /// Handle a key event. Returns `true` if the app should quit.
+    fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        // Process detail popup mode
+        if self.state.show_process_detail {
+            return self.handle_key_detail_popup(key);
+        }
+
+        // Signal picker popup mode
+        if self.state.show_signal_picker {
+            return self.handle_key_signal_picker(key);
+        }
+
+        // Renice dialog mode
+        if self.state.show_renice_dialog {
+            return self.handle_key_renice_dialog(key);
+        }
+
+        // AI typing mode
+        if self.ai_typing {
+            return self.handle_key_ai_typing(key);
+        }
+
+        // Filter mode
+        if self.filtering {
+            return self.handle_key_filter(key);
+        }
+
+        // Normal mode
+        self.handle_key_normal(key)
+    }
+
+    fn handle_key_detail_popup(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                self.state.close_process_detail();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.state.detail_scroll > 0 {
+                    self.state.detail_scroll -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.state.detail_scroll += 1;
+            }
+            KeyCode::PageUp => {
+                self.state.detail_scroll =
+                    self.state.detail_scroll.saturating_sub(DETAIL_PAGE_STEP);
+            }
+            KeyCode::PageDown => {
+                self.state.detail_scroll += DETAIL_PAGE_STEP;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key_signal_picker(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.state.close_signal_picker();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.state.signal_picker_selected > 0 {
+                    self.state.signal_picker_selected -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.state.signal_picker_selected < ui::SIGNAL_LIST.len() - 1 {
+                    self.state.signal_picker_selected += 1;
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(pid) = self.state.signal_picker_pid {
+                    let (sig_num, sig_name, _) =
+                        ui::SIGNAL_LIST[self.state.signal_picker_selected];
+                    let name = self.state.signal_picker_name.clone();
+                    let result = unsafe { libc::kill(pid as i32, sig_num) };
+                    if result == 0 {
+                        self.state
+                            .set_status(format!("Sent {} to PID {} ({})", sig_name, pid, name));
+                    } else {
+                        self.state.set_status(format!(
+                            "Failed to send {} to PID {} ({})",
+                            sig_name, pid, name
+                        ));
+                    }
+                }
+                self.state.close_signal_picker();
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key_renice_dialog(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.state.close_renice_dialog();
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.state.renice_value = (self.state.renice_value - 1).max(NICE_MIN);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.state.renice_value = (self.state.renice_value + 1).min(NICE_MAX);
+            }
+            KeyCode::Up => {
+                self.state.renice_value = (self.state.renice_value - NICE_STEP).max(NICE_MIN);
+            }
+            KeyCode::Down => {
+                self.state.renice_value = (self.state.renice_value + NICE_STEP).min(NICE_MAX);
+            }
+            KeyCode::Enter => {
+                if let Some(pid) = self.state.renice_pid {
+                    let name = self.state.renice_name.clone();
+                    let nice = self.state.renice_value;
+                    let result =
+                        unsafe { libc::setpriority(libc::PRIO_PROCESS, pid, nice) };
+                    if result == 0 {
+                        self.state
+                            .set_status(format!("Set nice {} for PID {} ({})", nice, pid, name));
+                    } else {
+                        let err = std::io::Error::last_os_error();
+                        self.state
+                            .set_status(format!("Renice failed for PID {}: {}", pid, err));
+                    }
+                }
+                self.state.close_renice_dialog();
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key_ai_typing(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.ai_typing = false;
+                self.state.ai_input.clear();
+                self.state.ai_cursor_pos = 0;
+            }
+            KeyCode::Enter => {
+                if !self.state.ai_loading {
+                    if self.state.ai_submit().is_some() {
+                        if self.claude_client.is_some() {
+                            self.state.ai_loading = true;
+                            self.dispatch_ai_chat();
+                        }
+                    }
+                }
+                self.ai_typing = false;
+            }
+            KeyCode::Backspace => {
+                self.state.ai_input_backspace();
+            }
+            KeyCode::Left => {
+                self.state.ai_cursor_left();
+            }
+            KeyCode::Right => {
+                self.state.ai_cursor_right();
+            }
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.state.ai_conversation.clear();
+                self.state.ai_input.clear();
+                self.state.ai_cursor_pos = 0;
+                self.ai_typing = false;
+            }
+            KeyCode::Char(c) => {
+                self.state.ai_input_char(c);
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key_filter(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.state.filter_text.clear();
+                self.filtering = false;
+            }
+            KeyCode::Enter => {
+                self.filtering = false;
+            }
+            KeyCode::Backspace => {
+                self.state.filter_text.pop();
+                if self.state.filter_text.is_empty() {
+                    self.filtering = false;
+                }
+            }
+            KeyCode::Char(c) => {
+                self.state.filter_text.push(c);
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Handle keys in normal mode. Returns `true` if the app should quit.
+    fn handle_key_normal(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                if self.state.active_tab != Tab::AskAi {
+                    return true;
+                }
+                self.ai_typing = true;
+                self.state.ai_input_char(if key.code == KeyCode::Char('Q') { 'Q' } else { 'q' });
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
+
+            // Tab navigation
+            KeyCode::Tab => self.state.next_tab(),
+            KeyCode::BackTab => self.state.prev_tab(),
+            KeyCode::Char('1') => self.state.active_tab = Tab::Dashboard,
+            KeyCode::Char('2') => self.state.active_tab = Tab::Processes,
+            KeyCode::Char('3') => self.state.active_tab = Tab::Alerts,
+            KeyCode::Char('4') => {
+                self.state.active_tab = Tab::AskAi;
+                self.ai_typing = true;
+            }
+
+            // Kill process (Processes tab only) -- must be before scroll
+            KeyCode::Char('k') if self.state.active_tab == Tab::Processes => {
+                self.send_sigterm();
+            }
+            KeyCode::Char('K') if self.state.active_tab == Tab::Processes => {
+                self.send_sigkill();
+            }
+
+            // Scrolling
+            KeyCode::Up | KeyCode::Char('k') => self.state.scroll_up(),
+            KeyCode::Down | KeyCode::Char('j') => self.state.scroll_down(),
+            KeyCode::PageUp => self.state.page_up(),
+            KeyCode::PageDown => self.state.page_down(),
+            KeyCode::Home => {
+                self.state.selected_process = 0;
+                self.state.alert_scroll = 0;
+                self.state.ai_scroll = 0;
+            }
+            KeyCode::End => {
+                let max = self.state.filtered_processes().len().saturating_sub(1);
+                self.state.selected_process = max;
+                self.state.alert_scroll = self.state.alerts.len().saturating_sub(1);
+            }
+
+            // Sort
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                if self.state.active_tab != Tab::AskAi {
+                    self.state.cycle_sort();
+                } else {
+                    self.ai_typing = true;
+                    self.state.ai_input_char('s');
+                }
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                if self.state.active_tab != Tab::AskAi {
+                    self.state.toggle_sort_direction();
+                } else {
+                    self.ai_typing = true;
+                    self.state.ai_input_char('r');
+                }
+            }
+
+            // AI insight expand/collapse (Dashboard tab only)
+            KeyCode::Char('e') if self.state.active_tab == Tab::Dashboard => {
+                self.state.ai_insight_expanded = !self.state.ai_insight_expanded;
+            }
+
+            // Signal picker
+            KeyCode::Char('x') if self.state.active_tab == Tab::Processes => {
+                self.state.open_signal_picker();
+            }
+
+            // Renice dialog
+            KeyCode::Char('n') if self.state.active_tab == Tab::Processes => {
+                self.state.open_renice_dialog();
+            }
+
+            // Zoom history charts (Dashboard tab)
+            KeyCode::Char('+') | KeyCode::Char('=')
+                if self.state.active_tab == Tab::Dashboard =>
+            {
+                self.state.history_window = self.state.history_window.prev();
+            }
+            KeyCode::Char('-') if self.state.active_tab == Tab::Dashboard => {
+                self.state.history_window = self.state.history_window.next();
+            }
+
+            // Widget focus/expand (Dashboard tab)
+            KeyCode::Char('f') if self.state.active_tab == Tab::Dashboard => {
+                self.state.toggle_focus();
+            }
+            KeyCode::Char('F')
+                if self.state.active_tab == Tab::Dashboard
+                    && self.state.focused_widget.is_some() =>
+            {
+                self.state.cycle_focus_forward();
+            }
+
+            // Theme cycling
+            KeyCode::Char('T') => {
+                if self.state.active_tab != Tab::AskAi {
+                    self.state.cycle_theme();
+                    self.state
+                        .set_status(format!("Theme: {}", self.state.theme.name));
+                } else {
+                    self.ai_typing = true;
+                    self.state.ai_input_char('T');
+                }
+            }
+
+            // Language cycling
+            KeyCode::Char('L') => {
+                if self.state.active_tab != Tab::AskAi {
+                    self.state.cycle_lang();
+                    self.state
+                        .set_status(format!("Language: {}", self.state.current_lang));
+                } else {
+                    self.ai_typing = true;
+                    self.state.ai_input_char('L');
+                }
+            }
+
+            // Tree view toggle (Processes tab only)
+            KeyCode::Char('t') if self.state.active_tab == Tab::Processes => {
+                self.state.tree_view = !self.state.tree_view;
+                self.state.selected_process = 0;
+            }
+
+            // Ask AI about selected process (Processes tab only)
+            KeyCode::Char('a') if self.state.active_tab == Tab::Processes => {
+                self.ask_ai_about_selected_process();
+            }
+
+            // Filter
+            KeyCode::Char('/') => {
+                if self.state.active_tab != Tab::AskAi {
+                    self.filtering = true;
+                    self.state.filter_text.clear();
+                } else {
+                    self.ai_typing = true;
+                    self.state.ai_input_char('/');
+                }
+            }
+
+            // Process detail popup
+            KeyCode::Enter if self.state.active_tab == Tab::Processes => {
+                let proc_clone = {
+                    let filtered = self.state.filtered_processes();
+                    filtered
+                        .get(self.state.selected_process)
+                        .map(|p| (*p).clone())
+                };
+                if let Some(proc) = proc_clone {
+                    self.state.open_process_detail(&proc);
+                }
+            }
+
+            // On AI tab, Enter focuses the input
+            KeyCode::Enter if self.state.active_tab == Tab::AskAi => {
+                self.ai_typing = true;
+            }
+
+            // Any character on AI tab starts typing
+            KeyCode::Char(c) if self.state.active_tab == Tab::AskAi => {
+                if c == '?' {
+                    self.state.show_help = !self.state.show_help;
+                } else {
+                    self.ai_typing = true;
+                    self.state.ai_input_char(c);
+                }
+            }
+
+            // Ctrl+L to clear AI chat from any mode
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.state.active_tab == Tab::AskAi {
+                    self.state.ai_conversation.clear();
+                }
+            }
+
+            // Help
+            KeyCode::Char('?') => self.state.show_help = !self.state.show_help,
+            KeyCode::Esc => {
+                if self.state.show_help {
+                    self.state.show_help = false;
+                } else if self.state.active_tab == Tab::AskAi {
+                    self.state.active_tab = Tab::Dashboard;
+                } else {
+                    self.state.filter_text.clear();
+                }
+            }
+
+            _ => {}
+        }
+        false
+    }
+
+    // ── Contextual AI query ──────────────────────────────────────
+
+    fn ask_ai_about_selected_process(&mut self) {
+        if !self.has_key || self.state.ai_loading {
+            return;
+        }
+
+        let proc_clone = {
+            let filtered = self.state.filtered_processes();
+            filtered
+                .get(self.state.selected_process)
+                .map(|p| (*p).clone())
+        };
+        if let Some(proc) = proc_clone {
+            let question = format!(
+                "Tell me about this process: PID {} ({}) - \
+                 CPU: {:.1}%, Memory: {}, Status: {}, User: {}, \
+                 Command: {}. \
+                 What is it, is it normal, should I be concerned?",
+                proc.pid,
+                proc.name,
+                proc.cpu_usage,
+                crate::models::format_bytes(proc.memory_bytes),
+                proc.status,
+                proc.user,
+                proc.cmd,
+            );
+
+            self.state.active_tab = Tab::AskAi;
+            self.state.ai_conversation.add_user_message(&question);
+            self.state.ai_loading = true;
+            self.dispatch_ai_chat();
+        }
+    }
+
+    // ── Tick-based logic ─────────────────────────────────────────
+
+    fn tick_refresh(&mut self) {
+        let should_refresh =
+            self.state.tick_count == 0 || self.state.tick_count % REFRESH_THROTTLE_TICKS == 0;
+
+        if should_refresh {
+            let (system, processes) = self.collector.collect();
+            let new_alerts = self.detector.analyze(&system, &processes);
+            self.state.update(system, processes, new_alerts);
+
+            // Update Prometheus metrics snapshot
+            if let Some(ref metrics_handle) = self.shared_metrics {
+                if let Ok(mut snap) = metrics_handle.lock() {
+                    snap.system = self.state.system.clone();
+                    snap.process_count = self.state.processes.len();
+                    snap.alerts = self.state.alerts.clone();
+                    snap.containers = self.state.containers.clone();
+                }
+            }
+        } else {
+            self.state.tick_count += 1;
+        }
+    }
+
+    fn tick_auto_analysis(&mut self) {
+        if !self.auto_analysis_enabled || !self.has_key || self.state.ai_insight_loading {
+            return;
+        }
+
+        let should_analyze = match self.last_insight_time {
+            None => self.state.tick_count >= STARTUP_SETTLE_TICKS,
+            Some(t) => t.elapsed() >= self.insight_interval,
+        };
+
+        if should_analyze {
+            self.state.ai_insight_loading = true;
+            self.state.ai_insight = None;
+            self.state.ai_insight_scroll = 0;
+            self.last_insight_time = Some(std::time::Instant::now());
+            self.dispatch_insight();
+        }
+    }
+}

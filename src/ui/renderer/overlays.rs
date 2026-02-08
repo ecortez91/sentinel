@@ -1,0 +1,403 @@
+//! Popup overlays: process detail, help, signal picker, renice dialog.
+
+use ratatui::{
+    layout::Rect,
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    Frame,
+};
+
+use crate::ui::state::AppState;
+
+use super::helpers::{centered_rect, render_scrollbar, truncate_str};
+
+pub fn render_process_detail(frame: &mut Frame, area: Rect, state: &AppState) {
+    let t = &state.theme;
+    let Some(detail) = &state.process_detail else {
+        return;
+    };
+
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = (area.height - 4).min(40);
+    let popup_area = centered_rect(popup_width, popup_height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(
+                " Process {} - {} (Esc to close, ↑↓ scroll) ",
+                detail.pid, detail.name
+            ),
+            t.header_style(),
+        ))
+        .borders(Borders::ALL)
+        .border_style(t.border_highlight_style());
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let cmd_width = (inner.width as usize).saturating_sub(4);
+
+    // Basic info section
+    lines.push(Line::from(Span::styled(
+        " Process Info",
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(detail_line("PID:      ", &format!("{}", detail.pid), t));
+    lines.push(detail_line("Name:     ", &detail.name, t));
+    lines.push(detail_line("User:     ", &detail.user, t));
+    lines.push(Line::from(vec![
+        Span::styled("  Status:   ", Style::default().fg(t.text_dim)),
+        Span::styled(&detail.status, Style::default().fg(t.success)),
+    ]));
+    if let Some(ppid) = detail.parent_pid {
+        lines.push(detail_line("Parent:   ", &format!("PID {}", ppid), t));
+    }
+    if let Some(tc) = detail.thread_count {
+        lines.push(detail_line("Threads:  ", &format!("{}", tc), t));
+    }
+    lines.push(Line::raw(""));
+
+    // Resource usage
+    lines.push(Line::from(Span::styled(
+        " Resource Usage",
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    )));
+    let cpu_color = t.usage_color(detail.cpu_usage);
+    lines.push(Line::from(vec![
+        Span::styled("  CPU:      ", Style::default().fg(t.text_dim)),
+        Span::styled(
+            format!("{:.1}%", detail.cpu_usage),
+            Style::default().fg(cpu_color),
+        ),
+    ]));
+    let mem_color = t.usage_color(detail.memory_percent);
+    lines.push(Line::from(vec![
+        Span::styled("  Memory:   ", Style::default().fg(t.text_dim)),
+        Span::styled(
+            format!(
+                "{} ({:.1}%)",
+                crate::models::format_bytes(detail.memory_bytes),
+                detail.memory_percent
+            ),
+            Style::default().fg(mem_color),
+        ),
+    ]));
+    lines.push(Line::raw(""));
+
+    // Full command
+    lines.push(Line::from(Span::styled(
+        " Full Command",
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    )));
+    for line in textwrap::wrap(&detail.cmd, cmd_width) {
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(line.to_string(), Style::default().fg(t.text_primary)),
+        ]));
+    }
+    lines.push(Line::raw(""));
+
+    // Open file descriptors
+    lines.push(Line::from(Span::styled(
+        format!(" Open File Descriptors ({})", detail.open_fds),
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    )));
+    for fd in &detail.fd_sample {
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(truncate_str(fd, cmd_width), Style::default().fg(t.text_dim)),
+        ]));
+    }
+    if detail.open_fds > detail.fd_sample.len() {
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                format!(
+                    "  ... and {} more",
+                    detail.open_fds - detail.fd_sample.len()
+                ),
+                Style::default().fg(t.text_muted),
+            ),
+        ]));
+    }
+    lines.push(Line::raw(""));
+
+    // Environment variables
+    lines.push(Line::from(Span::styled(
+        format!(" Environment Variables ({})", detail.environ.len()),
+        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+    )));
+    for var in &detail.environ {
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                truncate_str(var, cmd_width),
+                Style::default().fg(t.text_dim),
+            ),
+        ]));
+    }
+
+    // Apply scrolling
+    let visible_height = inner.height as usize;
+    let total_lines = lines.len();
+    let scroll = state
+        .detail_scroll
+        .min(total_lines.saturating_sub(visible_height));
+
+    let visible_lines: Vec<Line> = lines
+        .into_iter()
+        .skip(scroll)
+        .take(visible_height)
+        .collect();
+
+    frame.render_widget(Paragraph::new(visible_lines), inner);
+
+    render_scrollbar(frame, inner, total_lines, scroll);
+}
+
+/// Helper: create a simple "  label: value" detail line.
+fn detail_line<'a>(label: &str, value: &str, t: &crate::ui::theme::Theme) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(format!("  {}", label), Style::default().fg(t.text_dim)),
+        Span::styled(value.to_string(), Style::default().fg(t.text_primary)),
+    ])
+}
+
+pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
+    let t = &state.theme;
+    let popup_width = 55;
+    let popup_height = 38;
+    let popup_area = centered_rect(popup_width, popup_height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let help_entry = |key: &str, desc: &str, color: ratatui::style::Color| -> Line {
+        Line::from(vec![
+            Span::styled(
+                format!("  {:<20}", key),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(desc.to_string(), Style::default().fg(t.text_primary)),
+        ])
+    };
+
+    let help_text = vec![
+        Line::from(Span::styled(
+            "  SENTINEL - Keyboard Shortcuts",
+            t.header_style(),
+        )),
+        Line::raw(""),
+        help_entry("Tab / Shift+Tab", "Switch tabs", t.accent),
+        help_entry("1 / 2 / 3 / 4", "Jump to tab (4 = Ask AI)", t.accent),
+        help_entry("Up/Down / j / k", "Scroll up/down", t.accent),
+        help_entry("PgUp / PgDn", "Page up/down", t.accent),
+        help_entry("s", "Cycle sort column", t.accent),
+        help_entry("r", "Reverse sort direction", t.accent),
+        help_entry("/", "Filter processes", t.accent),
+        help_entry("k", "SIGTERM selected process", t.warning),
+        help_entry("K (shift)", "SIGKILL selected process", t.danger),
+        help_entry("Enter", "Process detail popup", t.accent),
+        help_entry("t", "Toggle process tree view", t.accent),
+        help_entry("x", "Signal picker (process)", t.warning),
+        help_entry("n", "Renice process", t.accent),
+        help_entry("T", "Cycle color theme", t.accent),
+        help_entry("L", "Cycle UI language", t.accent),
+        help_entry("+/- (Dashboard)", "Zoom history charts", t.accent),
+        help_entry("f (Dashboard)", "Focus/expand widget", t.accent),
+        help_entry("a", "Ask AI about process", t.ai_accent),
+        help_entry("Esc", "Clear filter / close help", t.accent),
+        help_entry("q", "Quit", t.accent),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "  Ask AI Tab:",
+            Style::default()
+                .fg(t.ai_accent)
+                .add_modifier(Modifier::BOLD),
+        )),
+        help_entry("Enter", "Send question to Claude", t.accent),
+        help_entry("Ctrl+L", "Clear conversation", t.accent),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  Thresholds: ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                "CPU >50% warn, >90% crit",
+                Style::default().fg(t.text_muted),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("              ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                "RAM >1GiB warn, >2GiB crit/proc",
+                Style::default().fg(t.text_muted),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("              ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                "System RAM >75% warn, >90% crit",
+                Style::default().fg(t.text_muted),
+            ),
+        ]),
+    ];
+
+    let help = Paragraph::new(help_text)
+        .block(
+            Block::default()
+                .title(Span::styled(t!("title.help").to_string(), t.header_style()))
+                .borders(Borders::ALL)
+                .border_style(t.border_highlight_style()),
+        )
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(help, popup_area);
+}
+
+pub fn render_signal_picker(frame: &mut Frame, area: Rect, state: &AppState) {
+    let t = &state.theme;
+    let popup_width = 50.min(area.width.saturating_sub(4));
+    let popup_height =
+        (super::super::state::SIGNAL_LIST.len() as u16 + 6).min(area.height.saturating_sub(4));
+    let popup_area = centered_rect(popup_width, popup_height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let title = format!(
+        " Send Signal to PID {} ({}) ",
+        state.signal_picker_pid.unwrap_or(0),
+        truncate_str(&state.signal_picker_name, 16),
+    );
+
+    let block = Block::default()
+        .title(Span::styled(title, t.header_style()))
+        .borders(Borders::ALL)
+        .border_style(t.border_highlight_style());
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        " Select a signal (Enter to send, Esc to cancel):",
+        Style::default().fg(t.text_dim),
+    )));
+    lines.push(Line::raw(""));
+
+    for (i, (num, name, desc)) in super::super::state::SIGNAL_LIST.iter().enumerate() {
+        let is_selected = i == state.signal_picker_selected;
+        let prefix = if is_selected { " > " } else { "   " };
+
+        let style = if is_selected {
+            t.table_row_selected()
+        } else {
+            Style::default().fg(t.text_primary)
+        };
+
+        let danger_style = if *num == 9 {
+            if is_selected {
+                Style::default()
+                    .fg(t.danger)
+                    .bg(t.table_row_selected_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.danger)
+            }
+        } else {
+            style
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(format!("{:>2} ", num), Style::default().fg(t.text_muted)),
+            Span::styled(format!("{:<12}", name), danger_style),
+            Span::styled(*desc, Style::default().fg(t.text_dim)),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+pub fn render_renice_dialog(frame: &mut Frame, area: Rect, state: &AppState) {
+    let t = &state.theme;
+    let popup_width = 50.min(area.width.saturating_sub(4));
+    let popup_height = 10.min(area.height.saturating_sub(4));
+    let popup_area = centered_rect(popup_width, popup_height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let title = format!(
+        " Renice PID {} ({}) ",
+        state.renice_pid.unwrap_or(0),
+        truncate_str(&state.renice_name, 16),
+    );
+
+    let block = Block::default()
+        .title(Span::styled(title, t.header_style()))
+        .borders(Borders::ALL)
+        .border_style(t.border_highlight_style());
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let nice = state.renice_value;
+    let nice_color = if nice < 0 {
+        t.danger
+    } else if nice == 0 {
+        t.success
+    } else {
+        t.text_dim
+    };
+
+    let bar_width = 40.min(inner.width.saturating_sub(4)) as usize;
+    let pos = ((nice + 20) as f64 / 39.0 * bar_width as f64) as usize;
+    let bar: String = (0..bar_width)
+        .map(|i| if i == pos { '█' } else { '░' })
+        .collect();
+
+    let lines = vec![
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  Nice value: ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                format!("{:+}", nice),
+                Style::default().fg(nice_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if nice < 0 {
+                    "  (higher priority)"
+                } else if nice == 0 {
+                    "  (normal priority)"
+                } else {
+                    "  (lower priority)"
+                },
+                Style::default().fg(t.text_muted),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  -20 ", Style::default().fg(t.danger)),
+            Span::styled(bar, Style::default().fg(nice_color)),
+            Span::styled(" +19", Style::default().fg(t.text_dim)),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(
+                "  ←/→ ",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Adjust  ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                "Enter ",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Apply  ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                "Esc ",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Cancel", Style::default().fg(t.text_dim)),
+        ]),
+    ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}

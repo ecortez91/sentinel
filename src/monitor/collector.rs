@@ -4,6 +4,7 @@ use sysinfo::{
     Disks, Networks, ProcessStatus as SysProcessStatus, ProcessesToUpdate, System, Users,
 };
 
+use crate::constants::*;
 use crate::models::{
     BatteryInfo, BatteryStatus, CpuTemperature, DiskInfo, GpuInfo, NetworkInfo, ProcessInfo,
     ProcessStatus, SystemSnapshot,
@@ -29,7 +30,7 @@ impl SystemCollector {
         let mut sys = System::new_all();
         sys.refresh_all();
         // Allow initial data to settle
-        std::thread::sleep(std::time::Duration::from_millis(250));
+        std::thread::sleep(std::time::Duration::from_millis(INITIAL_SETTLE_MS));
         sys.refresh_all();
         let users = Users::new_with_refreshed_list();
         let networks = Networks::new_with_refreshed_list();
@@ -87,7 +88,7 @@ impl SystemCollector {
             .disks
             .list()
             .iter()
-            .filter(|d| d.total_space() >= 1_000_000_000)
+            .filter(|d| d.total_space() >= MIN_DISK_SIZE_BYTES)
             .map(|d| {
                 let name = d.name().to_string_lossy().to_string();
                 // Strip /dev/ prefix for matching against /proc/diskstats
@@ -276,7 +277,7 @@ fn read_cpu_temperature() -> Option<CpuTemperature> {
             }
 
             // Read temp*_input files
-            for i in 1..=32 {
+            for i in 1..=MAX_HWMON_SENSORS {
                 let temp_path = path.join(format!("temp{}_input", i));
                 if let Ok(val) = std::fs::read_to_string(&temp_path) {
                     if let Ok(millideg) = val.trim().parse::<f32>() {
@@ -305,7 +306,7 @@ fn read_cpu_temperature() -> Option<CpuTemperature> {
 
     // Fallback: try /sys/class/thermal/thermal_zone*
     if package_temp.is_none() && core_temps.is_empty() {
-        for i in 0..10 {
+        for i in 0..MAX_THERMAL_ZONES {
             let temp_path = format!("/sys/class/thermal/thermal_zone{}/temp", i);
             let type_path = format!("/sys/class/thermal/thermal_zone{}/type", i);
             let zone_type = std::fs::read_to_string(&type_path)
@@ -428,7 +429,7 @@ fn read_disk_io_counters() -> HashMap<String, (u64, u64)> {
 
     for line in content.lines() {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 14 {
+        if fields.len() < MIN_DISKSTATS_FIELDS {
             continue;
         }
 
@@ -442,8 +443,8 @@ fn read_disk_io_counters() -> HashMap<String, (u64, u64)> {
         // Sector size is typically 512 bytes
         let sectors_read: u64 = fields[5].parse().unwrap_or(0);
         let sectors_written: u64 = fields[9].parse().unwrap_or(0);
-        let read_bytes = sectors_read * 512;
-        let write_bytes = sectors_written * 512;
+        let read_bytes = sectors_read * SECTOR_SIZE_BYTES;
+        let write_bytes = sectors_written * SECTOR_SIZE_BYTES;
 
         result.insert(name, (read_bytes, write_bytes));
     }

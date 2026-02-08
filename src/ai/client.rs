@@ -6,14 +6,10 @@ use serde_json::Value;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
+use crate::constants::*;
+
 /// Anthropic OAuth token refresh endpoint (same as OpenCode/OpenClaw use).
 const ANTHROPIC_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
-
-/// Public OAuth client ID for Anthropic (shared across OpenCode, OpenClaw, etc.).
-const ANTHROPIC_OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-
-/// Refresh tokens 5 minutes before actual expiry to avoid race conditions.
-const EXPIRY_BUFFER_MS: u64 = 5 * 60 * 1000;
 
 /// How we authenticate with the Anthropic API.
 #[derive(Debug, Clone)]
@@ -62,8 +58,6 @@ struct OpenCodeAuth {
 
 #[derive(Deserialize)]
 struct OpenCodeAnthropicAuth {
-    #[serde(rename = "type")]
-    _auth_type: Option<String>,
     access: Option<String>,
     refresh: Option<String>,
     expires: Option<u64>,
@@ -74,7 +68,7 @@ impl ClaudeClient {
         Self {
             client: Client::new(),
             auth,
-            model: "claude-opus-4-6".to_string(),
+            model: CLAUDE_MODEL.to_string(),
         }
     }
 
@@ -130,7 +124,7 @@ impl ClaudeClient {
 
         // Check if token is expired or near expiry
         let needs_refresh = match anthropic.expires {
-            Some(expires) => now_ms + EXPIRY_BUFFER_MS >= expires,
+            Some(expires) => now_ms + TOKEN_EXPIRY_BUFFER_MS as u64 >= expires,
             None => false, // No expiry info — assume it's valid
         };
 
@@ -160,8 +154,7 @@ impl ClaudeClient {
 
     /// Try reading from Claude Code's plaintext credential store (Linux).
     fn read_claude_code_auth() -> Option<AuthMethod> {
-        let home = std::env::var("HOME").ok()?;
-        let cred_path = PathBuf::from(&home).join(".claude").join(".credentials.json");
+        let cred_path = crate::constants::home_dir().join(".claude").join(".credentials.json");
         let content = std::fs::read_to_string(&cred_path).ok()?;
         let creds: Value = serde_json::from_str(&content).ok()?;
 
@@ -201,7 +194,7 @@ impl ClaudeClient {
 
         let body = serde_json::json!({
             "model": self.model,
-            "max_tokens": 4096,
+            "max_tokens": CLAUDE_MAX_TOKENS,
             "stream": true,
             "system": system_value,
             "messages": messages,
@@ -210,14 +203,14 @@ impl ClaudeClient {
         let mut request = self
             .client
             .post("https://api.anthropic.com/v1/messages")
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", CLAUDE_API_VERSION)
             .header("content-type", "application/json");
 
         // OAuth tokens require beta feature flags
         if self.is_oauth() {
             request = request.header(
                 "anthropic-beta",
-                "claude-code-20250219,oauth-2025-04-20",
+                CLAUDE_BETA_FLAGS,
             );
         }
 
@@ -250,7 +243,7 @@ impl ClaudeClient {
             } else if status.as_u16() == 429 {
                 "Rate limited. Wait a moment and try again.".to_string()
             } else {
-                format!("API error {}: {}", status, truncate_err(&body_text, 300))
+                format!("API error {}: {}", status, crate::utils::truncate_str(&body_text, 300))
             };
             let _ = tx.send(AiEvent::Error(err_msg));
             return Ok(());
@@ -320,16 +313,11 @@ impl ClaudeClient {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn auth_method(&self) -> &AuthMethod {
-        &self.auth
-    }
 }
 
 /// Path to OpenCode's auth.json
 fn dirs_opencode_auth() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home)
+    crate::constants::home_dir()
         .join(".local")
         .join("share")
         .join("opencode")
@@ -342,7 +330,7 @@ async fn refresh_opencode_token(refresh_token: &str) -> Option<(String, String, 
     let client = Client::new();
     let body = serde_json::json!({
         "grant_type": "refresh_token",
-        "client_id": ANTHROPIC_OAUTH_CLIENT_ID,
+        "client_id": OAUTH_CLIENT_ID,
         "refresh_token": refresh_token,
     });
 
@@ -370,7 +358,7 @@ async fn refresh_opencode_token(refresh_token: &str) -> Option<(String, String, 
         .ok()?
         .as_millis() as u64
         + expires_in * 1000
-        - EXPIRY_BUFFER_MS;
+        - TOKEN_EXPIRY_BUFFER_MS as u64;
 
     Some((access_token, new_refresh, expires_at))
 }
@@ -398,6 +386,4 @@ fn write_opencode_auth(access: &str, refresh: &str, expires: u64) {
     let _ = std::fs::write(&auth_path, serde_json::to_string_pretty(&auth_data).unwrap_or_default());
 }
 
-fn truncate_err(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
-}
+
