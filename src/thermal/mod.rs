@@ -231,19 +231,17 @@ pub fn parse_lhm_json(json_str: &str) -> Option<ThermalSnapshot> {
 
         match sensor.category.as_str() {
             "Temperatures" => {
-                // Track max temp across all temperature sensors
-                if sensor.value > snapshot.max_temp {
-                    snapshot.max_temp = sensor.value;
-                }
-
                 if is_cpu_hardware(&path_str) {
-                    // CPU temperatures
+                    // CPU temperatures — all contribute to max_temp
+                    if sensor.value > snapshot.max_temp {
+                        snapshot.max_temp = sensor.value;
+                    }
                     if name_lower.contains("package") || name_lower.contains("cpu total") {
                         snapshot.cpu_package = Some(sensor.value);
                         if sensor.value > snapshot.max_cpu_temp {
                             snapshot.max_cpu_temp = sensor.value;
                         }
-                    } else if name_lower.contains("core") {
+                    } else if name_lower.contains("core") || name_lower.contains("average") || name_lower.contains("max") {
                         snapshot.cpu_cores.push(SensorReading {
                             name: sensor.name.clone(),
                             value: sensor.value,
@@ -252,13 +250,16 @@ pub fn parse_lhm_json(json_str: &str) -> Option<ThermalSnapshot> {
                             snapshot.max_cpu_temp = sensor.value;
                         }
                     } else {
-                        // Other CPU temps
+                        // Other CPU temps (CCD, etc.)
                         if sensor.value > snapshot.max_cpu_temp {
                             snapshot.max_cpu_temp = sensor.value;
                         }
                     }
                 } else if is_gpu_hardware(&path_str) {
-                    // GPU temperatures
+                    // GPU temperatures — all contribute to max_temp
+                    if sensor.value > snapshot.max_temp {
+                        snapshot.max_temp = sensor.value;
+                    }
                     if name_lower.contains("hot spot") || name_lower.contains("hotspot") {
                         snapshot.gpu_hotspot = Some(sensor.value);
                     } else if name_lower.contains("gpu") || name_lower.contains("temperature") {
@@ -268,16 +269,30 @@ pub fn parse_lhm_json(json_str: &str) -> Option<ThermalSnapshot> {
                         snapshot.max_gpu_temp = sensor.value;
                     }
                 } else if is_storage_hardware(&path_str) {
+                    // Storage temps contribute to max_temp
+                    if sensor.value > snapshot.max_temp {
+                        snapshot.max_temp = sensor.value;
+                    }
                     snapshot.ssd_temps.push(SensorReading {
                         name: format_storage_name(&sensor.hardware_path, &sensor.name),
                         value: sensor.value,
                     });
                 } else {
                     // Motherboard / chipset / other
+                    let is_mb_cpu = is_motherboard_cpu_sensor(&sensor.name);
                     snapshot.motherboard_temps.push(SensorReading {
-                        name: sensor.name.clone(),
+                        name: if is_mb_cpu {
+                            format!("{} (socket)", sensor.name)
+                        } else {
+                            sensor.name.clone()
+                        },
                         value: sensor.value,
                     });
+                    // Motherboard CPU socket sensor should NOT inflate max_temp —
+                    // it's a less accurate proxy read by the Super I/O chip.
+                    if !is_mb_cpu && sensor.value > snapshot.max_temp {
+                        snapshot.max_temp = sensor.value;
+                    }
                 }
             }
             "Fans" => {
@@ -329,6 +344,11 @@ fn collect_sensors(
                 text.clone()
             };
 
+            // Skip noise/metadata sensors
+            if is_noise_sensor(&name) {
+                return;
+            }
+
             if !current_category.is_empty() {
                 out.push(ParsedSensor {
                     hardware_path: hardware_path.clone(),
@@ -374,6 +394,48 @@ fn parse_sensor_value(s: &str) -> Option<f32> {
         .collect();
     let num_str = num_str.replace(',', ".");
     num_str.parse::<f32>().ok()
+}
+
+// ── Sensor filtering ─────────────────────────────────────────────
+
+/// Returns true if a sensor name is metadata/noise that should be excluded.
+/// These are LHM entries that look like sensors but are really config values
+/// or diagnostic metadata from the chip driver (Nuvoton, ITE, etc.).
+fn is_noise_sensor(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    // Distance to TjMax is an inverse metric, not an actual temperature
+    if lower.contains("distance to tjmax") || lower.contains("tjmax") {
+        return true;
+    }
+    // Chip diagnostic metadata, not real sensor readings
+    if lower.contains("sensor resolution")
+        || lower.contains("sensor low")
+        || lower.contains("sensor high")
+        || lower.contains("sensor limit")
+    {
+        return true;
+    }
+    // Threshold values reported as sensors
+    if lower.starts_with("temperature warning")
+        || lower.starts_with("temperature critical")
+        || lower.starts_with("thermal sensor")
+    {
+        return true;
+    }
+    false
+}
+
+/// Returns true if this motherboard temperature sensor is actually reading the
+/// CPU socket temperature (via the motherboard's Super I/O chip, e.g. Nuvoton).
+/// This is a less accurate proxy for CPU die temp and should not inflate max_temp.
+fn is_motherboard_cpu_sensor(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    // Exact match for "CPU" sensor on motherboard (Nuvoton, ITE chips)
+    // but NOT "CPU Fan" or "CPU Opt" (those are fans, not temps)
+    lower == "cpu"
+        || lower == "cpu temperature"
+        || lower == "cpu (peci)"
+        || lower == "cpu peci"
 }
 
 // ── Hardware classification ──────────────────────────────────────
@@ -897,5 +959,105 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn is_noise_sensor_filters_tjmax() {
+        assert!(is_noise_sensor("Core #1 Distance to TjMax"));
+        assert!(is_noise_sensor("CPU Core #3 (TjMax)"));
+        assert!(!is_noise_sensor("CPU Core #1"));
+        assert!(!is_noise_sensor("CPU Package"));
+    }
+
+    #[test]
+    fn is_noise_sensor_filters_metadata() {
+        assert!(is_noise_sensor("Temperature Sensor Resolution"));
+        assert!(is_noise_sensor("Thermal Sensor Low Limit"));
+        assert!(is_noise_sensor("Thermal Sensor High Limit"));
+        assert!(is_noise_sensor("Thermal Sensor Critical Limit"));
+        assert!(is_noise_sensor("Temperature warning"));
+        assert!(is_noise_sensor("Temperature critical"));
+        assert!(!is_noise_sensor("System"));
+        assert!(!is_noise_sensor("PCH"));
+    }
+
+    #[test]
+    fn is_motherboard_cpu_sensor_detects_socket() {
+        assert!(is_motherboard_cpu_sensor("CPU"));
+        assert!(is_motherboard_cpu_sensor("CPU Temperature"));
+        assert!(is_motherboard_cpu_sensor("CPU (PECI)"));
+        assert!(!is_motherboard_cpu_sensor("CPU Fan"));
+        assert!(!is_motherboard_cpu_sensor("System"));
+        assert!(!is_motherboard_cpu_sensor("PCH"));
+    }
+
+    #[test]
+    fn noise_sensors_excluded_from_parse() {
+        // Build a JSON tree with noise sensors alongside real ones
+        let json = r#"{
+            "id": 0, "Text": "Sensor", "Min": "", "Max": "", "Value": "", "ImageURL": "",
+            "Children": [{
+                "id": 1, "Text": "Intel Core i7-12700K", "Min": "", "Max": "", "Value": "", "ImageURL": "images/cpu.png",
+                "Children": [{
+                    "id": 2, "Text": "Temperatures", "Min": "", "Max": "", "Value": "", "ImageURL": "",
+                    "Children": [
+                        {"id": 3, "Text": "CPU Package: 72.0 °C", "Min": "", "Max": "", "Value": "72.0 °C", "ImageURL": "", "Children": []},
+                        {"id": 4, "Text": "CPU Core #1: 70.0 °C", "Min": "", "Max": "", "Value": "70.0 °C", "ImageURL": "", "Children": []},
+                        {"id": 5, "Text": "Core #1 Distance to TjMax: 30.0 °C", "Min": "", "Max": "", "Value": "30.0 °C", "ImageURL": "", "Children": []},
+                        {"id": 6, "Text": "Core #2 Distance to TjMax: 32.0 °C", "Min": "", "Max": "", "Value": "32.0 °C", "ImageURL": "", "Children": []}
+                    ]
+                }]
+            }]
+        }"#;
+        let snapshot = parse_lhm_json(json).expect("Should parse");
+        // Only real sensors: package + core #1 (TjMax entries filtered out)
+        assert_eq!(snapshot.cpu_cores.len(), 1, "TjMax entries should be filtered");
+        assert!(snapshot.cpu_cores[0].name.contains("Core #1"));
+        assert!(snapshot.cpu_package.is_some());
+    }
+
+    #[test]
+    fn motherboard_cpu_sensor_does_not_inflate_max_temp() {
+        // Motherboard has a "CPU" sensor reading 92°C (socket sensor)
+        // Real CPU package is 72°C — max_temp should be 72, not 92
+        let json = r#"{
+            "id": 0, "Text": "Sensor", "Min": "", "Max": "", "Value": "", "ImageURL": "",
+            "Children": [
+                {
+                    "id": 1, "Text": "Intel Core i7-12700K", "Min": "", "Max": "", "Value": "", "ImageURL": "images/cpu.png",
+                    "Children": [{
+                        "id": 2, "Text": "Temperatures", "Min": "", "Max": "", "Value": "", "ImageURL": "",
+                        "Children": [
+                            {"id": 3, "Text": "CPU Package: 72.0 °C", "Min": "", "Max": "", "Value": "72.0 °C", "ImageURL": "", "Children": []}
+                        ]
+                    }]
+                },
+                {
+                    "id": 10, "Text": "Nuvoton NCT6798D", "Min": "", "Max": "", "Value": "", "ImageURL": "images/chip.png",
+                    "Children": [{
+                        "id": 11, "Text": "Temperatures", "Min": "", "Max": "", "Value": "", "ImageURL": "",
+                        "Children": [
+                            {"id": 12, "Text": "CPU: 92.0 °C", "Min": "", "Max": "", "Value": "92.0 °C", "ImageURL": "", "Children": []},
+                            {"id": 13, "Text": "System: 47.5 °C", "Min": "", "Max": "", "Value": "47.5 °C", "ImageURL": "", "Children": []}
+                        ]
+                    }]
+                }
+            ]
+        }"#;
+        let snapshot = parse_lhm_json(json).expect("Should parse");
+        // max_temp should be 72 (CPU package), NOT 92 (motherboard socket sensor)
+        assert!(
+            (snapshot.max_temp - 72.0).abs() < 0.01,
+            "max_temp should be 72.0 from CPU package, got {}",
+            snapshot.max_temp
+        );
+        // The motherboard CPU sensor should still appear but labelled "(socket)"
+        let mb_cpu = snapshot.motherboard_temps.iter().find(|s| s.name.contains("socket"));
+        assert!(mb_cpu.is_some(), "Motherboard CPU sensor should be present with '(socket)' label");
+        assert!((mb_cpu.unwrap().value - 92.0).abs() < 0.01);
+        // System sensor at 47.5 should contribute to max_temp (non-CPU motherboard sensor)
+        // but it's lower than 72 so max_temp stays at 72
+        let system = snapshot.motherboard_temps.iter().find(|s| s.name == "System");
+        assert!(system.is_some());
     }
 }
