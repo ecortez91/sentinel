@@ -110,6 +110,14 @@ pub const TEMP_MID_C: f32 = 60.0;
 // ── Thermal Monitoring ─────────────────────────────────────────────
 /// Default LibreHardwareMonitor HTTP JSON URL.
 pub const DEFAULT_LHM_URL: &str = "http://localhost:8085/data.json";
+/// Default LHM port (used when auto-detecting WSL host IP).
+pub const DEFAULT_LHM_PORT: u16 = 8085;
+/// Environment variable: LHM basic auth username.
+pub const ENV_LHM_USER: &str = "SENTINEL_LHM_USER";
+/// Environment variable: LHM basic auth password.
+pub const ENV_LHM_PASSWORD: &str = "SENTINEL_LHM_PASSWORD";
+/// Environment variable: override LHM URL entirely.
+pub const ENV_LHM_URL: &str = "SENTINEL_LHM_URL";
 /// Default thermal polling interval (seconds).
 pub const DEFAULT_THERMAL_POLL_SECS: u64 = 5;
 /// Default thermal warning threshold (Celsius).

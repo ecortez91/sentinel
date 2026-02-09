@@ -58,17 +58,41 @@ impl ThermalSnapshot {
     }
 }
 
+/// Optional basic auth credentials for the LHM web server.
+#[derive(Debug, Clone)]
+pub struct LhmAuth {
+    pub username: String,
+    pub password: String,
+}
+
+impl LhmAuth {
+    /// Load LHM auth from environment variables (if both are set).
+    pub fn from_env() -> Option<Self> {
+        let user = std::env::var(crate::constants::ENV_LHM_USER).ok()?;
+        let pass = std::env::var(crate::constants::ENV_LHM_PASSWORD).ok()?;
+        if user.is_empty() || pass.is_empty() {
+            return None;
+        }
+        Some(Self {
+            username: user,
+            password: pass,
+        })
+    }
+}
+
 /// Client for polling LibreHardwareMonitor's HTTP JSON endpoint.
 pub struct LhmClient {
     url: String,
+    auth: Option<LhmAuth>,
     client: reqwest::Client,
 }
 
 impl LhmClient {
-    /// Create a new client pointing at the given LHM URL.
-    pub fn new(url: &str) -> Self {
+    /// Create a new client pointing at the given LHM URL with optional auth.
+    pub fn new(url: &str, auth: Option<LhmAuth>) -> Self {
         Self {
             url: url.to_string(),
+            auth,
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(3))
                 .build()
@@ -78,13 +102,58 @@ impl LhmClient {
 
     /// Poll LHM and return a thermal snapshot, or None if unreachable / parse error.
     pub async fn poll(&self) -> Option<ThermalSnapshot> {
-        let resp = self.client.get(&self.url).send().await.ok()?;
+        let mut req = self.client.get(&self.url);
+        if let Some(ref auth) = self.auth {
+            req = req.basic_auth(&auth.username, Some(&auth.password));
+        }
+        let resp = req.send().await.ok()?;
         if !resp.status().is_success() {
             return None;
         }
         let text = resp.text().await.ok()?;
         parse_lhm_json(&text)
     }
+}
+
+/// Detect the Windows host IP from WSL2 (reads /etc/resolv.conf nameserver).
+/// Returns None if not running in WSL or detection fails.
+pub fn detect_wsl_host_ip() -> Option<String> {
+    let resolv = std::fs::read_to_string("/etc/resolv.conf").ok()?;
+    for line in resolv.lines() {
+        let line = line.trim();
+        if line.starts_with("nameserver") {
+            let ip = line.split_whitespace().nth(1)?;
+            // Sanity check: must look like an IP, not 127.x.x.x
+            if !ip.starts_with("127.") && ip.contains('.') {
+                return Some(ip.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Resolve the effective LHM URL, checking env override first, then config,
+/// then auto-detecting WSL host IP if localhost doesn't work.
+pub fn resolve_lhm_url(config_url: &str) -> String {
+    // 1. Explicit env var override wins
+    if let Ok(url) = std::env::var(crate::constants::ENV_LHM_URL) {
+        if !url.is_empty() {
+            return url;
+        }
+    }
+
+    // 2. If config URL uses localhost and we're in WSL, substitute host IP
+    if config_url.contains("localhost") || config_url.contains("127.0.0.1") {
+        if let Some(host_ip) = detect_wsl_host_ip() {
+            let resolved = config_url
+                .replace("localhost", &host_ip)
+                .replace("127.0.0.1", &host_ip);
+            return resolved;
+        }
+    }
+
+    // 3. Use config URL as-is
+    config_url.to_string()
 }
 
 // ── LHM JSON structures ──────────────────────────────────────────
@@ -686,5 +755,147 @@ mod tests {
         assert!(is_storage_hardware("samsung ssd 970 evo plus"));
         assert!(is_storage_hardware("nvme drive"));
         assert!(is_storage_hardware("wd black sn750"));
+    }
+
+    #[test]
+    fn detect_wsl_host_ip_returns_some_on_wsl() {
+        // This test verifies the helper works on WSL (returns Some)
+        // or gracefully returns None on non-WSL systems.
+        let ip = detect_wsl_host_ip();
+        if std::path::Path::new("/etc/resolv.conf").exists() {
+            // On WSL2 the nameserver should be the host IP
+            // On native Linux it may be 127.0.0.53 which we skip
+            if let Some(ref addr) = ip {
+                assert!(addr.contains('.'), "Should be an IPv4 address");
+                assert!(!addr.starts_with("127."), "Should not be loopback");
+            }
+        }
+        // Either way, no panic — the function is safe
+    }
+
+    #[test]
+    fn resolve_lhm_url_substitutes_wsl_host() {
+        let resolved = resolve_lhm_url("http://localhost:8085/data.json");
+        // On WSL, localhost should be replaced with the host IP
+        // On non-WSL, it stays as localhost
+        if detect_wsl_host_ip().is_some() {
+            assert!(
+                !resolved.contains("localhost"),
+                "Should replace localhost on WSL, got: {}",
+                resolved
+            );
+            assert!(resolved.contains(":8085/data.json"));
+        } else {
+            assert_eq!(resolved, "http://localhost:8085/data.json");
+        }
+    }
+
+    #[test]
+    fn resolve_lhm_url_respects_env_override() {
+        // Temporarily set the env var
+        let key = crate::constants::ENV_LHM_URL;
+        let original = std::env::var(key).ok();
+        std::env::set_var(key, "http://custom:9999/data.json");
+        let resolved = resolve_lhm_url("http://localhost:8085/data.json");
+        assert_eq!(resolved, "http://custom:9999/data.json");
+        // Restore
+        match original {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn lhm_auth_from_env_returns_none_when_missing() {
+        // Clear env vars to ensure clean state
+        let user_key = crate::constants::ENV_LHM_USER;
+        let pass_key = crate::constants::ENV_LHM_PASSWORD;
+        let orig_user = std::env::var(user_key).ok();
+        let orig_pass = std::env::var(pass_key).ok();
+        std::env::remove_var(user_key);
+        std::env::remove_var(pass_key);
+        assert!(LhmAuth::from_env().is_none());
+        // Restore
+        if let Some(v) = orig_user { std::env::set_var(user_key, v); }
+        if let Some(v) = orig_pass { std::env::set_var(pass_key, v); }
+    }
+
+    #[test]
+    fn lhm_auth_from_env_returns_some_when_set() {
+        let user_key = crate::constants::ENV_LHM_USER;
+        let pass_key = crate::constants::ENV_LHM_PASSWORD;
+        let orig_user = std::env::var(user_key).ok();
+        let orig_pass = std::env::var(pass_key).ok();
+        std::env::set_var(user_key, "testuser");
+        std::env::set_var(pass_key, "testpass");
+        let auth = LhmAuth::from_env().expect("Should load auth from env");
+        assert_eq!(auth.username, "testuser");
+        assert_eq!(auth.password, "testpass");
+        // Restore
+        match orig_user {
+            Some(v) => std::env::set_var(user_key, v),
+            None => std::env::remove_var(user_key),
+        }
+        match orig_pass {
+            Some(v) => std::env::set_var(pass_key, v),
+            None => std::env::remove_var(pass_key),
+        }
+    }
+
+    /// Integration test: poll the real LHM server running on the Windows host.
+    ///
+    /// This test loads .env credentials, resolves the WSL host IP, and
+    /// fetches a live thermal snapshot. It is skipped if LHM is not reachable.
+    #[tokio::test]
+    async fn live_lhm_poll_returns_thermal_data() {
+        // Load .env from the sentinel config directory
+        let env_path = crate::constants::env_file_path();
+        let _ = dotenvy::from_path(&env_path);
+
+        // Resolve URL (auto-detects WSL host IP)
+        let url = resolve_lhm_url(crate::constants::DEFAULT_LHM_URL);
+        let auth = LhmAuth::from_env();
+
+        // If no auth configured, skip (CI or no .env)
+        if auth.is_none() {
+            eprintln!("SKIP: No LHM auth configured (no .env with SENTINEL_LHM_USER/PASSWORD)");
+            return;
+        }
+
+        let client = LhmClient::new(&url, auth);
+        let snapshot = client.poll().await;
+
+        match snapshot {
+            Some(snap) => {
+                // We got real data from LHM!
+                eprintln!("=== LIVE THERMAL DATA ===");
+                eprintln!("{}", snap.to_text());
+
+                // Basic sanity: max_temp should be a reasonable value (> 0, < 150)
+                assert!(snap.max_temp > 0.0, "Max temp should be > 0, got {}", snap.max_temp);
+                assert!(snap.max_temp < 150.0, "Max temp should be < 150, got {}", snap.max_temp);
+
+                // We should have at least some sensors
+                let total_sensors = snap.cpu_cores.len()
+                    + snap.cpu_package.is_some() as usize
+                    + snap.gpu_temp.is_some() as usize
+                    + snap.gpu_hotspot.is_some() as usize
+                    + snap.ssd_temps.len()
+                    + snap.fan_rpms.len()
+                    + snap.motherboard_temps.len();
+                assert!(total_sensors > 0, "Should have at least one sensor reading");
+
+                eprintln!("Total sensors: {}", total_sensors);
+                eprintln!("Max temp: {:.1}°C", snap.max_temp);
+                eprintln!("Max CPU: {:.1}°C", snap.max_cpu_temp);
+                eprintln!("Max GPU: {:.1}°C", snap.max_gpu_temp);
+            }
+            None => {
+                eprintln!(
+                    "SKIP: LHM not reachable at {} (server may be offline)",
+                    url
+                );
+            }
+        }
     }
 }

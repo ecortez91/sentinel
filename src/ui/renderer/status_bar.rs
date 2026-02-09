@@ -82,6 +82,12 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState) {
             spans.push(badge("Ctrl+L", t.ai_accent));
             spans.push(dim(" Clear "));
         }
+        Tab::Thermal => {
+            spans.push(badge(":", t.accent_secondary));
+            spans.push(dim(" thermal "));
+            spans.push(badge("Ctrl+X", t.warning));
+            spans.push(dim(" Abort shutdown "));
+        }
         Tab::Security => {
             spans.push(badge(":", t.accent_secondary));
             spans.push(dim(" listeners "));

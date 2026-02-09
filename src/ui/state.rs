@@ -178,8 +178,9 @@ pub enum Tab {
     Dashboard,
     Processes,
     Alerts,
-    AskAi,
+    Thermal,
     Security,
+    AskAi,
 }
 
 impl Tab {
@@ -188,8 +189,9 @@ impl Tab {
             Tab::Dashboard,
             Tab::Processes,
             Tab::Alerts,
-            Tab::AskAi,
+            Tab::Thermal,
             Tab::Security,
+            Tab::AskAi,
         ]
     }
 
@@ -198,8 +200,9 @@ impl Tab {
             Tab::Dashboard => t!("tab.dashboard").to_string(),
             Tab::Processes => t!("tab.processes").to_string(),
             Tab::Alerts => t!("tab.alerts").to_string(),
-            Tab::AskAi => t!("tab.ask_ai").to_string(),
+            Tab::Thermal => "Thermal".to_string(),
             Tab::Security => "Security".to_string(),
+            Tab::AskAi => t!("tab.ask_ai").to_string(),
         }
     }
 
@@ -209,8 +212,9 @@ impl Tab {
             Tab::Dashboard => 0,
             Tab::Processes => 1,
             Tab::Alerts => 2,
-            Tab::AskAi => 3,
+            Tab::Thermal => 3,
             Tab::Security => 4,
+            Tab::AskAi => 5,
         }
     }
 }
@@ -599,19 +603,21 @@ impl AppState {
         self.active_tab = match self.active_tab {
             Tab::Dashboard => Tab::Processes,
             Tab::Processes => Tab::Alerts,
-            Tab::Alerts => Tab::AskAi,
-            Tab::AskAi => Tab::Security,
-            Tab::Security => Tab::Dashboard,
+            Tab::Alerts => Tab::Thermal,
+            Tab::Thermal => Tab::Security,
+            Tab::Security => Tab::AskAi,
+            Tab::AskAi => Tab::Dashboard,
         };
     }
 
     pub fn prev_tab(&mut self) {
         self.active_tab = match self.active_tab {
-            Tab::Dashboard => Tab::Security,
+            Tab::Dashboard => Tab::AskAi,
             Tab::Processes => Tab::Dashboard,
             Tab::Alerts => Tab::Processes,
-            Tab::AskAi => Tab::Alerts,
-            Tab::Security => Tab::AskAi,
+            Tab::Thermal => Tab::Alerts,
+            Tab::Security => Tab::Thermal,
+            Tab::AskAi => Tab::Security,
         };
     }
 
@@ -655,6 +661,7 @@ impl AppState {
                     self.ai_scroll -= 1;
                 }
             }
+            Tab::Thermal => {}  // Scrolling handled by thermal tab renderer
             Tab::Security => {} // No scrollable content yet
         }
     }
@@ -678,6 +685,7 @@ impl AppState {
             Tab::AskAi => {
                 self.ai_scroll += 1;
             }
+            Tab::Thermal => {}  // Scrolling handled by thermal tab renderer
             Tab::Security => {} // No scrollable content yet
         }
     }
@@ -1083,8 +1091,8 @@ mod tests {
     // ── Tab ───────────────────────────────────────────────────────
 
     #[test]
-    fn tab_all_has_five() {
-        assert_eq!(Tab::all().len(), 5);
+    fn tab_all_has_six() {
+        assert_eq!(Tab::all().len(), 6);
     }
 
     #[test]
@@ -1092,8 +1100,9 @@ mod tests {
         assert_eq!(Tab::Dashboard.index(), 0);
         assert_eq!(Tab::Processes.index(), 1);
         assert_eq!(Tab::Alerts.index(), 2);
-        assert_eq!(Tab::AskAi.index(), 3);
+        assert_eq!(Tab::Thermal.index(), 3);
         assert_eq!(Tab::Security.index(), 4);
+        assert_eq!(Tab::AskAi.index(), 5);
     }
 
     // ── Tab navigation ────────────────────────────────────────────
@@ -1107,9 +1116,11 @@ mod tests {
         s.next_tab();
         assert_eq!(s.active_tab, Tab::Alerts);
         s.next_tab();
-        assert_eq!(s.active_tab, Tab::AskAi);
+        assert_eq!(s.active_tab, Tab::Thermal);
         s.next_tab();
         assert_eq!(s.active_tab, Tab::Security);
+        s.next_tab();
+        assert_eq!(s.active_tab, Tab::AskAi);
         s.next_tab();
         assert_eq!(s.active_tab, Tab::Dashboard);
     }
@@ -1118,9 +1129,11 @@ mod tests {
     fn prev_tab_cycles() {
         let mut s = make_state();
         s.prev_tab();
+        assert_eq!(s.active_tab, Tab::AskAi);
+        s.prev_tab();
         assert_eq!(s.active_tab, Tab::Security);
         s.prev_tab();
-        assert_eq!(s.active_tab, Tab::AskAi);
+        assert_eq!(s.active_tab, Tab::Thermal);
         s.prev_tab();
         assert_eq!(s.active_tab, Tab::Alerts);
     }

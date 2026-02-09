@@ -47,6 +47,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         Tab::Processes => processes::render_processes(frame, main_chunks[1], state),
         Tab::Alerts => alerts::render_alerts(frame, main_chunks[1], state),
         Tab::AskAi => ai_chat::render_ask_ai(frame, main_chunks[1], state),
+        Tab::Thermal => thermal::render_thermal_tab(frame, main_chunks[1], state),
         Tab::Security => crate::security::render_security(frame, main_chunks[1], state),
     }
 

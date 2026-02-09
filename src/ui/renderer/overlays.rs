@@ -218,7 +218,7 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
         // ── Navigation ──
         section("Navigation"),
         entry("Tab / Shift+Tab", "Switch tabs", t.accent),
-        entry("1-5", "Jump to tab (5 = Security)", t.accent),
+        entry("1-6", "Jump to tab (4=Thermal, 6=AI)", t.accent),
         entry("Up/Down / j / k", "Scroll up/down", t.accent),
         entry("PgUp / PgDn", "Page up/down", t.accent),
         entry("Home / End", "Jump to top/bottom", t.accent),

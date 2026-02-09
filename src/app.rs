@@ -214,10 +214,12 @@ impl App {
         let (thermal_tx, thermal_rx) = mpsc::unbounded_channel();
         {
             let tx = thermal_tx;
-            let lhm_url = config.thermal.lhm_url.clone();
+            let lhm_url = crate::thermal::resolve_lhm_url(&config.thermal.lhm_url);
+            let lhm_auth = crate::thermal::LhmAuth::from_env();
             let poll_secs = config.thermal.poll_interval_secs;
+            eprintln!("Thermal: polling {} (auth: {})", lhm_url, if lhm_auth.is_some() { "yes" } else { "no" });
             tokio::spawn(async move {
-                let client = LhmClient::new(&lhm_url);
+                let client = LhmClient::new(&lhm_url, lhm_auth);
                 loop {
                     let snapshot = client.poll().await;
                     if tx.send(snapshot).is_err() {
@@ -934,11 +936,12 @@ impl App {
             KeyCode::Char('1') => self.state.active_tab = Tab::Dashboard,
             KeyCode::Char('2') => self.state.active_tab = Tab::Processes,
             KeyCode::Char('3') => self.state.active_tab = Tab::Alerts,
-            KeyCode::Char('4') => {
+            KeyCode::Char('4') => self.state.active_tab = Tab::Thermal,
+            KeyCode::Char('5') => self.state.active_tab = Tab::Security,
+            KeyCode::Char('6') => {
                 self.state.active_tab = Tab::AskAi;
                 self.ai_typing = true;
             }
-            KeyCode::Char('5') => self.state.active_tab = Tab::Security,
 
             // Kill process (Processes tab only) -- must be before scroll
             KeyCode::Char('k') if self.state.active_tab == Tab::Processes => {
