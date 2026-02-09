@@ -17,6 +17,7 @@ pub mod helpers;
 mod overlays;
 mod processes;
 mod status_bar;
+mod thermal;
 
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -46,6 +47,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         Tab::Processes => processes::render_processes(frame, main_chunks[1], state),
         Tab::Alerts => alerts::render_alerts(frame, main_chunks[1], state),
         Tab::AskAi => ai_chat::render_ask_ai(frame, main_chunks[1], state),
+        Tab::Security => crate::security::render_security(frame, main_chunks[1], state),
     }
 
     if state.show_process_detail {
@@ -70,5 +72,10 @@ pub fn render(frame: &mut Frame, state: &AppState) {
 
     if state.show_command_palette {
         overlays::render_command_palette(frame, size, state);
+    }
+
+    // Shutdown overlay renders on top of everything when active
+    if state.shutdown_manager.state.is_active() {
+        overlays::render_shutdown_overlay(frame, size, state);
     }
 }

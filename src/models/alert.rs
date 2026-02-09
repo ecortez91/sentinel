@@ -32,6 +32,9 @@ pub enum AlertCategory {
     SystemOverload,
     MemoryLeak,
     SecurityThreat,
+    ThermalWarning,
+    ThermalCritical,
+    ThermalEmergency,
 }
 
 impl fmt::Display for AlertCategory {
@@ -45,6 +48,9 @@ impl fmt::Display for AlertCategory {
             AlertCategory::SystemOverload => write!(f, "OVERLOAD"),
             AlertCategory::MemoryLeak => write!(f, "LEAK"),
             AlertCategory::SecurityThreat => write!(f, "SECURITY"),
+            AlertCategory::ThermalWarning => write!(f, "THERMAL"),
+            AlertCategory::ThermalCritical => write!(f, "THERMAL!"),
+            AlertCategory::ThermalEmergency => write!(f, "THERMAL!!"),
         }
     }
 }
@@ -133,6 +139,9 @@ mod tests {
         assert_eq!(AlertCategory::SystemOverload.to_string(), "OVERLOAD");
         assert_eq!(AlertCategory::MemoryLeak.to_string(), "LEAK");
         assert_eq!(AlertCategory::SecurityThreat.to_string(), "SECURITY");
+        assert_eq!(AlertCategory::ThermalWarning.to_string(), "THERMAL");
+        assert_eq!(AlertCategory::ThermalCritical.to_string(), "THERMAL!");
+        assert_eq!(AlertCategory::ThermalEmergency.to_string(), "THERMAL!!");
     }
 
     // ── Alert::new ────────────────────────────────────────────────

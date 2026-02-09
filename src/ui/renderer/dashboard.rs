@@ -31,6 +31,7 @@ pub fn render_dashboard(frame: &mut Frame, area: Rect, state: &AppState) {
             FocusedWidget::CpuCores => render_cpu_cores(frame, chunks[0], state),
             FocusedWidget::Sparklines => render_sparklines(frame, chunks[0], state),
             FocusedWidget::Gpu => render_gpu_panel(frame, chunks[0], state),
+            FocusedWidget::Thermal => super::thermal::render_thermal_panel(frame, chunks[0], state),
             FocusedWidget::Network => render_network_panel(frame, chunks[0], state),
             FocusedWidget::Disk => render_disk_panel(frame, chunks[0], state),
             FocusedWidget::AiInsight => render_ai_insight(frame, chunks[0], state),
@@ -70,6 +71,7 @@ pub fn render_dashboard(frame: &mut Frame, area: Rect, state: &AppState) {
     let has_insight = state.ai_has_key;
     let has_gpu = state.system.as_ref().and_then(|s| s.gpu.as_ref()).is_some();
     let has_docker = state.docker_available && !state.containers.is_empty();
+    let has_thermal = state.thermal.is_some();
 
     let insight_height: u16 = if has_insight {
         if state.ai_insight_expanded {
@@ -81,6 +83,36 @@ pub fn render_dashboard(frame: &mut Frame, area: Rect, state: &AppState) {
         0
     };
     let gpu_height: u16 = if has_gpu { 5 } else { 0 };
+    // Thermal panel: dynamic height based on sensor count
+    let thermal_height: u16 = if has_thermal {
+        let snap = state.thermal.as_ref().unwrap();
+        let mut rows = 2u16; // border + header
+        if snap.cpu_package.is_some() || !snap.cpu_cores.is_empty() {
+            rows += 1; // CPU section header
+            if snap.cpu_package.is_some() {
+                rows += 1;
+            }
+            rows += snap.cpu_cores.len().min(8) as u16;
+        }
+        if snap.gpu_temp.is_some() || snap.gpu_hotspot.is_some() {
+            rows += 1; // separator/label
+            if snap.gpu_temp.is_some() {
+                rows += 1;
+            }
+            if snap.gpu_hotspot.is_some() {
+                rows += 1;
+            }
+        }
+        if !snap.fan_rpms.is_empty() {
+            rows += 1 + snap.fan_rpms.len().min(4) as u16;
+        }
+        if !snap.ssd_temps.is_empty() {
+            rows += 1 + snap.ssd_temps.len().min(4) as u16;
+        }
+        rows.min(20).max(5)
+    } else {
+        0
+    };
     let docker_height: u16 = if has_docker {
         (state.containers.len() as u16 + 3).min(8)
     } else {
@@ -98,16 +130,17 @@ pub fn render_dashboard(frame: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let constraints = vec![
-        Constraint::Length(8 + battery_row),
-        Constraint::Length(5),
-        Constraint::Length(5),
-        Constraint::Length(gpu_height),
-        Constraint::Length(5),
-        Constraint::Length(5),
-        Constraint::Length(docker_height),
-        Constraint::Length(insight_height),
-        Constraint::Min(8),
-        Constraint::Length(8),
+        Constraint::Length(8 + battery_row), // 0: system gauges
+        Constraint::Length(5),               // 1: cpu cores
+        Constraint::Length(5),               // 2: sparklines
+        Constraint::Length(gpu_height),      // 3: gpu
+        Constraint::Length(thermal_height),  // 4: thermal
+        Constraint::Length(5),               // 5: network
+        Constraint::Length(5),               // 6: disk
+        Constraint::Length(docker_height),   // 7: docker
+        Constraint::Length(insight_height),  // 8: ai insight
+        Constraint::Min(8),                  // 9: top processes
+        Constraint::Length(8),               // 10: alerts/ticker
     ];
 
     let chunks = Layout::default()
@@ -121,26 +154,29 @@ pub fn render_dashboard(frame: &mut Frame, area: Rect, state: &AppState) {
     if has_gpu {
         render_gpu_panel(frame, chunks[3], state);
     }
-    render_network_panel(frame, chunks[4], state);
-    render_disk_panel(frame, chunks[5], state);
+    if has_thermal {
+        super::thermal::render_thermal_panel(frame, chunks[4], state);
+    }
+    render_network_panel(frame, chunks[5], state);
+    render_disk_panel(frame, chunks[6], state);
     if has_docker {
-        render_docker_panel(frame, chunks[6], state);
+        render_docker_panel(frame, chunks[7], state);
     }
     if has_insight {
-        render_ai_insight(frame, chunks[7], state);
+        render_ai_insight(frame, chunks[8], state);
     }
-    render_top_processes(frame, chunks[8], state);
+    render_top_processes(frame, chunks[9], state);
 
     // Bottom row: split between recent alerts and event ticker
     if !state.recent_events.is_empty() {
         let bottom_split = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-            .split(chunks[9]);
+            .split(chunks[10]);
         render_recent_alerts(frame, bottom_split[0], state);
         render_event_ticker(frame, bottom_split[1], state);
     } else {
-        render_recent_alerts(frame, chunks[9], state);
+        render_recent_alerts(frame, chunks[10], state);
     }
 }
 

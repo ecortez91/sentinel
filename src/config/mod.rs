@@ -33,6 +33,64 @@ pub struct Config {
     pub theme: String,
     /// UI language (en, ja, es, de, zh)
     pub lang: String,
+    /// Thermal monitoring configuration
+    pub thermal: ThermalConfig,
+    /// Email notification configuration
+    pub notifications: NotificationConfig,
+}
+
+/// Thermal monitoring settings (LibreHardwareMonitor integration).
+#[derive(Debug, Clone)]
+pub struct ThermalConfig {
+    /// LHM HTTP JSON endpoint URL.
+    pub lhm_url: String,
+    /// Polling interval in seconds.
+    pub poll_interval_secs: u64,
+    /// Temperature warning threshold (Celsius).
+    pub warning_threshold: f32,
+    /// Temperature critical threshold (Celsius).
+    pub critical_threshold: f32,
+    /// Temperature emergency threshold (Celsius).
+    pub emergency_threshold: f32,
+    /// Sustained seconds at emergency before shutdown escalation.
+    pub sustained_seconds: u64,
+    /// Enable auto-shutdown state machine (OFF by default, also requires .env flag).
+    pub auto_shutdown_enabled: bool,
+    /// Schedule start hour (0-23, shutdown only active during window).
+    pub shutdown_schedule_start: u8,
+    /// Schedule end hour (0-23).
+    pub shutdown_schedule_end: u8,
+}
+
+impl Default for ThermalConfig {
+    fn default() -> Self {
+        Self {
+            lhm_url: DEFAULT_LHM_URL.to_string(),
+            poll_interval_secs: DEFAULT_THERMAL_POLL_SECS,
+            warning_threshold: DEFAULT_THERMAL_WARNING_C,
+            critical_threshold: DEFAULT_THERMAL_CRITICAL_C,
+            emergency_threshold: DEFAULT_THERMAL_EMERGENCY_C,
+            sustained_seconds: DEFAULT_THERMAL_SUSTAINED_SECS,
+            auto_shutdown_enabled: false,
+            shutdown_schedule_start: DEFAULT_SHUTDOWN_SCHEDULE_START,
+            shutdown_schedule_end: DEFAULT_SHUTDOWN_SCHEDULE_END,
+        }
+    }
+}
+
+/// Email notification settings.
+#[derive(Debug, Clone)]
+pub struct NotificationConfig {
+    /// Whether email notifications are enabled (still requires .env SMTP credentials).
+    pub email_enabled: bool,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            email_enabled: true,
+        }
+    }
 }
 
 impl Default for Config {
@@ -72,6 +130,8 @@ impl Default for Config {
             auto_analysis_interval_secs: DEFAULT_AUTO_ANALYSIS_SECS,
             theme: "default".to_string(),
             lang: "en".to_string(),
+            thermal: ThermalConfig::default(),
+            notifications: NotificationConfig::default(),
         }
     }
 }
@@ -95,6 +155,30 @@ struct FileConfig {
     auto_analysis_interval_secs: Option<u64>,
     theme: Option<String>,
     lang: Option<String>,
+    thermal: Option<FileThermalConfig>,
+    notifications: Option<FileNotificationConfig>,
+}
+
+/// TOML-deserializable thermal config section.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct FileThermalConfig {
+    lhm_url: Option<String>,
+    poll_interval_secs: Option<u64>,
+    warning_threshold: Option<f32>,
+    critical_threshold: Option<f32>,
+    emergency_threshold: Option<f32>,
+    sustained_seconds: Option<u64>,
+    auto_shutdown_enabled: Option<bool>,
+    shutdown_schedule_start: Option<u8>,
+    shutdown_schedule_end: Option<u8>,
+}
+
+/// TOML-deserializable notification config section.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct FileNotificationConfig {
+    email_enabled: Option<bool>,
 }
 
 impl Config {
@@ -167,6 +251,46 @@ impl Config {
         if let Some(v) = file_config.lang {
             if !v.is_empty() {
                 config.lang = v;
+            }
+        }
+
+        // Merge thermal config
+        if let Some(t) = file_config.thermal {
+            if let Some(v) = t.lhm_url {
+                if !v.is_empty() {
+                    config.thermal.lhm_url = v;
+                }
+            }
+            if let Some(v) = t.poll_interval_secs {
+                config.thermal.poll_interval_secs = v.max(1);
+            }
+            if let Some(v) = t.warning_threshold {
+                config.thermal.warning_threshold = v.clamp(30.0, 150.0);
+            }
+            if let Some(v) = t.critical_threshold {
+                config.thermal.critical_threshold = v.clamp(30.0, 150.0);
+            }
+            if let Some(v) = t.emergency_threshold {
+                config.thermal.emergency_threshold = v.clamp(30.0, 150.0);
+            }
+            if let Some(v) = t.sustained_seconds {
+                config.thermal.sustained_seconds = v.max(5);
+            }
+            if let Some(v) = t.auto_shutdown_enabled {
+                config.thermal.auto_shutdown_enabled = v;
+            }
+            if let Some(v) = t.shutdown_schedule_start {
+                config.thermal.shutdown_schedule_start = v.min(23);
+            }
+            if let Some(v) = t.shutdown_schedule_end {
+                config.thermal.shutdown_schedule_end = v.min(24);
+            }
+        }
+
+        // Merge notification config
+        if let Some(n) = file_config.notifications {
+            if let Some(v) = n.email_enabled {
+                config.notifications.email_enabled = v;
             }
         }
 

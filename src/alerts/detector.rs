@@ -6,6 +6,7 @@ use crate::constants::*;
 use crate::models::{
     Alert, AlertCategory, AlertSeverity, ProcessInfo, ProcessStatus, SystemSnapshot,
 };
+use crate::thermal::ThermalSnapshot;
 
 /// The alert detection engine. Analyzes process and system data
 /// to generate warnings, threats, and anomalies.
@@ -30,6 +31,21 @@ impl AlertDetector {
             max_history: MAX_MEMORY_HISTORY, // ~30 seconds of history at 1s interval
             alert_cooldowns: HashMap::new(),
         }
+    }
+
+    /// Get the thermal warning threshold from config.
+    pub fn config_thermal_warning(&self) -> f32 {
+        self.config.thermal.warning_threshold
+    }
+
+    /// Get the thermal critical threshold from config.
+    pub fn config_thermal_critical(&self) -> f32 {
+        self.config.thermal.critical_threshold
+    }
+
+    /// Get the thermal emergency threshold from config.
+    pub fn config_thermal_emergency(&self) -> f32 {
+        self.config.thermal.emergency_threshold
     }
 
     /// Run all detection rules and return any triggered alerts.
@@ -308,5 +324,226 @@ impl AlertDetector {
                 HIGH_DISK_IO_THRESHOLD as f64,
             ));
         }
+    }
+
+    /// Check thermal data for temperature-related alerts.
+    /// Uses the same cooldown system as process alerts (PID 0 for system-level).
+    pub fn check_thermal(&mut self, thermal: &ThermalSnapshot) -> Vec<Alert> {
+        let warning = self.config.thermal.warning_threshold;
+        let critical = self.config.thermal.critical_threshold;
+        let emergency = self.config.thermal.emergency_threshold;
+
+        let mut raw_alerts = Vec::new();
+
+        // Check CPU package temperature
+        if let Some(pkg) = thermal.cpu_package {
+            self.emit_thermal_alert(
+                &mut raw_alerts,
+                "CPU Package",
+                pkg,
+                warning,
+                critical,
+                emergency,
+            );
+        }
+
+        // Check individual CPU cores
+        for core in &thermal.cpu_cores {
+            self.emit_thermal_alert(
+                &mut raw_alerts,
+                &core.name,
+                core.value,
+                warning,
+                critical,
+                emergency,
+            );
+        }
+
+        // Check GPU temperatures
+        if let Some(gpu) = thermal.gpu_temp {
+            self.emit_thermal_alert(
+                &mut raw_alerts,
+                "GPU Core",
+                gpu,
+                warning,
+                critical,
+                emergency,
+            );
+        }
+        if let Some(hotspot) = thermal.gpu_hotspot {
+            self.emit_thermal_alert(
+                &mut raw_alerts,
+                "GPU Hot Spot",
+                hotspot,
+                warning,
+                critical,
+                emergency,
+            );
+        }
+
+        // Apply cooldown deduplication
+        let now = Instant::now();
+        let cooldown = std::time::Duration::from_secs(ALERT_COOLDOWN_SECS);
+        raw_alerts
+            .into_iter()
+            .filter(|alert| {
+                let key = (alert.pid, alert.category);
+                match self.alert_cooldowns.get(&key) {
+                    Some(last_fired) if now.duration_since(*last_fired) < cooldown => false,
+                    _ => {
+                        self.alert_cooldowns.insert(key, now);
+                        true
+                    }
+                }
+            })
+            .collect()
+    }
+
+    fn emit_thermal_alert(
+        &self,
+        alerts: &mut Vec<Alert>,
+        sensor_name: &str,
+        temp: f32,
+        warning: f32,
+        critical: f32,
+        emergency: f32,
+    ) {
+        // Use a stable pseudo-PID derived from sensor name so different sensors
+        // don't collide in the cooldown dedup map (which keys on (pid, category)).
+        let pseudo_pid = sensor_name
+            .bytes()
+            .fold(0u32, |acc, b| acc.wrapping_add(b as u32));
+
+        if temp >= emergency {
+            alerts.push(Alert::new(
+                AlertSeverity::Danger,
+                AlertCategory::ThermalEmergency,
+                sensor_name,
+                pseudo_pid,
+                format!(
+                    "EMERGENCY: {} at {:.1}°C (threshold: {:.0}°C)",
+                    sensor_name, temp, emergency
+                ),
+                temp as f64,
+                emergency as f64,
+            ));
+        } else if temp >= critical {
+            alerts.push(Alert::new(
+                AlertSeverity::Critical,
+                AlertCategory::ThermalCritical,
+                sensor_name,
+                pseudo_pid,
+                format!(
+                    "CRITICAL: {} at {:.1}°C (threshold: {:.0}°C)",
+                    sensor_name, temp, critical
+                ),
+                temp as f64,
+                critical as f64,
+            ));
+        } else if temp >= warning {
+            alerts.push(Alert::new(
+                AlertSeverity::Warning,
+                AlertCategory::ThermalWarning,
+                sensor_name,
+                pseudo_pid,
+                format!(
+                    "{} running hot: {:.1}°C (threshold: {:.0}°C)",
+                    sensor_name, temp, warning
+                ),
+                temp as f64,
+                warning as f64,
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn make_detector() -> AlertDetector {
+        let config = Config::default();
+        AlertDetector::new(config)
+    }
+
+    fn make_thermal(cpu_pkg: Option<f32>, gpu: Option<f32>) -> ThermalSnapshot {
+        ThermalSnapshot {
+            timestamp: Instant::now(),
+            cpu_package: cpu_pkg,
+            cpu_cores: Vec::new(),
+            gpu_temp: gpu,
+            gpu_hotspot: None,
+            ssd_temps: Vec::new(),
+            fan_rpms: Vec::new(),
+            motherboard_temps: Vec::new(),
+            max_temp: cpu_pkg.unwrap_or(0.0).max(gpu.unwrap_or(0.0)),
+            max_cpu_temp: cpu_pkg.unwrap_or(0.0),
+            max_gpu_temp: gpu.unwrap_or(0.0),
+        }
+    }
+
+    #[test]
+    fn thermal_no_alert_below_warning() {
+        let mut det = make_detector();
+        let snap = make_thermal(Some(60.0), Some(55.0));
+        let alerts = det.check_thermal(&snap);
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn thermal_warning_at_threshold() {
+        let mut det = make_detector();
+        let snap = make_thermal(Some(85.0), None);
+        let alerts = det.check_thermal(&snap);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].category, AlertCategory::ThermalWarning);
+        assert_eq!(alerts[0].severity, AlertSeverity::Warning);
+    }
+
+    #[test]
+    fn thermal_critical_at_threshold() {
+        let mut det = make_detector();
+        let snap = make_thermal(Some(95.0), None);
+        let alerts = det.check_thermal(&snap);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].category, AlertCategory::ThermalCritical);
+        assert_eq!(alerts[0].severity, AlertSeverity::Critical);
+    }
+
+    #[test]
+    fn thermal_emergency_at_threshold() {
+        let mut det = make_detector();
+        let snap = make_thermal(Some(100.0), None);
+        let alerts = det.check_thermal(&snap);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].category, AlertCategory::ThermalEmergency);
+        assert_eq!(alerts[0].severity, AlertSeverity::Danger);
+    }
+
+    #[test]
+    fn thermal_multiple_sensors() {
+        let mut det = make_detector();
+        // Both CPU and GPU above warning
+        let snap = make_thermal(Some(90.0), Some(88.0));
+        let alerts = det.check_thermal(&snap);
+        // CPU at 90 = critical (>= 85 warning but >= 95 critical? No, 90 < 95, so warning)
+        // Actually: warning=85, critical=95, emergency=100
+        // CPU 90 >= 85 = warning, GPU 88 >= 85 = warning
+        assert_eq!(alerts.len(), 2);
+        assert!(alerts
+            .iter()
+            .all(|a| a.category == AlertCategory::ThermalWarning));
+    }
+
+    #[test]
+    fn thermal_cooldown_dedup() {
+        let mut det = make_detector();
+        let snap = make_thermal(Some(90.0), None);
+        let alerts1 = det.check_thermal(&snap);
+        assert_eq!(alerts1.len(), 1);
+        // Second call within cooldown — should be filtered
+        let alerts2 = det.check_thermal(&snap);
+        assert!(alerts2.is_empty());
     }
 }

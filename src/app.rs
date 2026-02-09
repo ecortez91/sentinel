@@ -25,6 +25,9 @@ use crate::alerts::AlertDetector;
 use crate::config::Config;
 use crate::constants::*;
 use crate::diagnostics::{DiagnosticEngine, SuggestedAction};
+use crate::notifications::{self, EmailNotifier, NotifyEvent};
+use crate::thermal::LhmClient;
+use crate::thermal::shutdown::{ShutdownEvent, ShutdownManager};
 use crate::ui::CommandResult;
 use crate::monitor::{ContainerInfo, DockerMonitor, SystemCollector};
 use crate::store::EventStore;
@@ -110,6 +113,12 @@ pub struct App {
     /// Ticks between network socket scans (every ~10s at 1s tick = 10).
     net_scan_interval: u64,
 
+    // Thermal monitoring (LHM)
+    thermal_rx: mpsc::UnboundedReceiver<Option<crate::thermal::ThermalSnapshot>>,
+
+    // Email notifications
+    email_notifier: Option<EmailNotifier>,
+
     // Local loop state
     filtering: bool,
     ai_typing: bool,
@@ -150,7 +159,29 @@ impl App {
         // Detect CJK font support before entering alternate screen
         let cjk_supported = crate::utils::detect_cjk_support();
 
-        let mut state = AppState::new(config.max_alerts, has_key, initial_theme, cjk_supported);
+        // Load .env for SMTP/shutdown credentials (optional, never committed)
+        let env_path = crate::constants::env_file_path();
+        let _ = dotenvy::from_path(&env_path);
+
+        // Create shutdown manager (double-gated: config + .env)
+        let shutdown_manager = ShutdownManager::new(
+            config.thermal.auto_shutdown_enabled,
+            config.thermal.emergency_threshold,
+            config.thermal.critical_threshold,
+            config.thermal.sustained_seconds,
+            SHUTDOWN_GRACE_PERIOD_SECS,
+            config.thermal.shutdown_schedule_start,
+            config.thermal.shutdown_schedule_end,
+        );
+
+        // Initialize email notifier (requires .env SMTP credentials)
+        let email_notifier = if config.notifications.email_enabled {
+            EmailNotifier::from_env()
+        } else {
+            None
+        };
+
+        let mut state = AppState::new(config.max_alerts, has_key, initial_theme, cjk_supported, shutdown_manager);
         if let Some(method) = &auth_display {
             state.ai_auth_method = method.clone();
         }
@@ -175,6 +206,24 @@ impl App {
                         break;
                     }
                     tokio::time::sleep(Duration::from_secs(DOCKER_POLL_SECS)).await;
+                }
+            });
+        }
+
+        // Thermal monitoring (LHM HTTP polling)
+        let (thermal_tx, thermal_rx) = mpsc::unbounded_channel();
+        {
+            let tx = thermal_tx;
+            let lhm_url = config.thermal.lhm_url.clone();
+            let poll_secs = config.thermal.poll_interval_secs;
+            tokio::spawn(async move {
+                let client = LhmClient::new(&lhm_url);
+                loop {
+                    let snapshot = client.poll().await;
+                    if tx.send(snapshot).is_err() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(poll_secs)).await;
                 }
             });
         }
@@ -229,6 +278,8 @@ impl App {
             shared_metrics,
             event_store,
             net_scan_interval: 10, // scan network sockets every ~10 ticks
+            thermal_rx,
+            email_notifier,
             filtering: false,
             ai_typing: false,
             last_insight_time: None,
@@ -259,6 +310,7 @@ impl App {
             self.drain_ai_events();
             self.drain_insight_events();
             self.drain_docker_events();
+            self.drain_thermal_events();
             self.drain_command_ai_events();
 
             if event::poll(Duration::from_millis(EVENT_POLL_MS))? {
@@ -278,6 +330,7 @@ impl App {
 
             self.tick_refresh();
             self.tick_auto_analysis();
+            self.tick_shutdown();
         }
 
         // Cleanup
@@ -339,6 +392,20 @@ impl App {
     fn drain_docker_events(&mut self) {
         while let Ok(containers) = self.docker_rx.try_recv() {
             self.state.containers = containers;
+        }
+    }
+
+    fn drain_thermal_events(&mut self) {
+        while let Ok(snapshot) = self.thermal_rx.try_recv() {
+            if let Some(ref snap) = snapshot {
+                // Push CPU package temp (or max CPU temp) to history ring buffer
+                let temp = snap.cpu_package.unwrap_or(snap.max_cpu_temp);
+                if self.state.temp_history.len() >= THERMAL_HISTORY_CAPACITY {
+                    self.state.temp_history.pop_front();
+                }
+                self.state.temp_history.push_back(temp);
+            }
+            self.state.thermal = snapshot;
         }
     }
 
@@ -600,6 +667,14 @@ impl App {
 
     /// Handle a key event. Returns `true` if the app should quit.
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        // Ctrl+X: abort thermal shutdown from ANY mode
+        if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.state.shutdown_manager.abort() {
+                self.state.set_status("Thermal shutdown ABORTED".to_string());
+            }
+            return false;
+        }
+
         // Command palette mode
         if self.state.show_command_palette {
             return self.handle_key_command_palette(key);
@@ -863,6 +938,7 @@ impl App {
                 self.state.active_tab = Tab::AskAi;
                 self.ai_typing = true;
             }
+            KeyCode::Char('5') => self.state.active_tab = Tab::Security,
 
             // Kill process (Processes tab only) -- must be before scroll
             KeyCode::Char('k') if self.state.active_tab == Tab::Processes => {
@@ -1642,14 +1718,87 @@ impl App {
                 }
             }
 
+            // Thermal status
+            "thermal" | "temps" | "temperature" => {
+                if let Some(ref snap) = self.state.thermal {
+                    let mut text = snap.to_text();
+                    text.push_str("\n\n");
+                    // Add config info
+                    text.push_str(&format!("Warning threshold: {:.0}°C\n",
+                        self.detector.config_thermal_warning()));
+                    text.push_str(&format!("Critical threshold: {:.0}°C\n",
+                        self.detector.config_thermal_critical()));
+                    text.push_str(&format!("Emergency threshold: {:.0}°C\n",
+                        self.detector.config_thermal_emergency()));
+                    text.push_str(&format!("Auto-shutdown: {}\n",
+                        if self.state.shutdown_manager.is_enabled() { "ENABLED" } else { "disabled" }));
+                    if self.email_notifier.is_some() {
+                        text.push_str("Email notifications: configured\n");
+                    } else {
+                        text.push_str("Email notifications: not configured (no .env credentials)\n");
+                    }
+                    CommandResult::text_only(text)
+                } else {
+                    CommandResult::text_only(
+                        "# Thermal Monitor\n\n\
+                         No thermal data available.\n\n\
+                         LibreHardwareMonitor is not reachable or not running.\n\
+                         Ensure LHM is running on Windows with Web Server enabled:\n\
+                         Options → Web Server → Enable\n\n\
+                         Expected URL: http://localhost:8085/data.json".to_string()
+                    )
+                }
+            }
+
+            // Email test
+            "email-test" | "test-email" => {
+                if let Some(ref mut notifier) = self.email_notifier {
+                    let config = notifier.config().clone();
+                    let recipient = config.recipient.clone();
+                    let server = config.server.clone();
+                    let port = config.port;
+                    let mut temp_notifier = EmailNotifier::new(config);
+                    // Fire the test email in background
+                    tokio::spawn(async move {
+                        match temp_notifier.send_test().await {
+                            Ok(()) => eprintln!("Test email sent successfully"),
+                            Err(e) => eprintln!("Test email failed: {}", e),
+                        }
+                    });
+                    CommandResult::text_only(format!(
+                        "# Email Test\n\n\
+                         Sending test email...\n\n\
+                         Server: {}:{}\n\
+                         To: {}\n\n\
+                         Check your inbox (and spam folder).",
+                        server, port, recipient,
+                    ))
+                } else {
+                    CommandResult::text_only(
+                        "# Email Test\n\n\
+                         Email notifications are not configured.\n\n\
+                         Create ~/.config/sentinel/.env with:\n\
+                         SENTINEL_SMTP_USER=your-email@gmail.com\n\
+                         SENTINEL_SMTP_PASSWORD=xxxx xxxx xxxx xxxx\n\
+                         SENTINEL_SMTP_RECIPIENT=destination@example.com\n\n\
+                         For Gmail: use an App Password (not your main password).\n\
+                         Enable 2FA first, then create an App Password at:\n\
+                         https://myaccount.google.com/apppasswords".to_string()
+                    )
+                }
+            }
+
             // Help
             "help" | "?" | "commands" => CommandResult::text_only(
-                "# Command Palette\n\n\
+                 "# Command Palette\n\n\
                  System:\n\
                  \x20 why / slow         - Resource contention analysis\n\
                  \x20 disk               - Disk usage analysis\n\
                  \x20 anomaly [minutes]  - Anomaly scan (default: 30 min)\n\
                  \x20 timeline [minutes] - What happened recently\n\n\
+                 Thermal:\n\
+                 \x20 thermal            - Current thermal snapshot (LHM)\n\
+                 \x20 email-test         - Send a test notification email\n\n\
                  Network:\n\
                  \x20 port <number>      - Who's using this port?\n\
                  \x20 listeners          - All active port listeners\n\n\
@@ -1735,7 +1884,13 @@ impl App {
 
         if should_refresh {
             let (system, processes) = self.collector.collect();
-            let new_alerts = self.detector.analyze(&system, &processes);
+            let mut new_alerts = self.detector.analyze(&system, &processes);
+
+            // Check thermal data for temperature alerts
+            if let Some(ref thermal) = self.state.thermal {
+                let thermal_alerts = self.detector.check_thermal(thermal);
+                new_alerts.extend(thermal_alerts);
+            }
 
             // Record to event store
             if let Some(ref mut store) = self.event_store {
@@ -1845,4 +2000,102 @@ impl App {
             self.dispatch_insight();
         }
     }
+
+    /// Tick the thermal shutdown state machine and send email notifications.
+    fn tick_shutdown(&mut self) {
+        // Only tick on refresh cycles (not every UI poll)
+        if self.state.tick_count % REFRESH_THROTTLE_TICKS != 0 {
+            return;
+        }
+
+        let max_temp = self.state.thermal.as_ref()
+            .map(|t| t.max_temp)
+            .unwrap_or(0.0);
+
+        let event = self.state.shutdown_manager.tick(max_temp);
+
+        // Get hostname for emails
+        let hostname = gethostname();
+
+        match event {
+            ShutdownEvent::None => {}
+            ShutdownEvent::EmergencyStarted => {
+                self.state.set_status(format!(
+                    "THERMAL EMERGENCY: {:.1}°C — counting sustained seconds...",
+                    max_temp
+                ));
+                self.send_thermal_email(NotifyEvent::ThermalCritical, max_temp, &hostname);
+            }
+            ShutdownEvent::Counting { elapsed_secs, required_secs } => {
+                self.state.set_status(format!(
+                    "THERMAL: {:.1}°C sustained {}/{}s",
+                    max_temp, elapsed_secs, required_secs
+                ));
+            }
+            ShutdownEvent::GracePeriodStarted => {
+                self.state.set_status(
+                    "SHUTDOWN GRACE PERIOD — Press Ctrl+X to ABORT".to_string()
+                );
+                self.send_thermal_email(NotifyEvent::ShutdownImminent, max_temp, &hostname);
+            }
+            ShutdownEvent::GracePeriodCountdown { remaining_secs } => {
+                self.state.set_status(format!(
+                    "SHUTDOWN IN {}s — Press Ctrl+X to ABORT",
+                    remaining_secs
+                ));
+            }
+            ShutdownEvent::ShutdownNow => {
+                self.state.set_status("EXECUTING SHUTDOWN...".to_string());
+                // Send final email before shutdown
+                self.send_thermal_email(NotifyEvent::ThermalEmergency, max_temp, &hostname);
+                // Execute shutdown
+                if let Err(e) = crate::thermal::shutdown::execute_shutdown() {
+                    self.state.set_status(format!("Shutdown failed: {}", e));
+                }
+            }
+            ShutdownEvent::Recovered => {
+                self.state.set_status(format!(
+                    "Temperature recovered: {:.1}°C — normal operation",
+                    max_temp
+                ));
+                self.send_thermal_email(NotifyEvent::Recovered, max_temp, &hostname);
+            }
+        }
+    }
+
+    /// Send a thermal email notification in the background.
+    fn send_thermal_email(&mut self, event: NotifyEvent, temp: f32, hostname: &str) {
+        if let Some(ref mut notifier) = self.email_notifier {
+            let sensor = self.state.thermal.as_ref()
+                .map(|t| {
+                    if t.max_cpu_temp >= t.max_gpu_temp {
+                        "CPU"
+                    } else {
+                        "GPU"
+                    }
+                })
+                .unwrap_or("Unknown");
+
+            // Check rate limit synchronously before spawning
+            let body = notifications::thermal_alert_body(&event, temp, sensor, hostname);
+
+            // We can't easily clone the notifier for async, so we do a synchronous
+            // rate-limit check and only fire if allowed. The actual send is fire-and-forget.
+            if notifier.can_send_check(&event) {
+                notifier.mark_sent(&event);
+                let smtp_config = notifier.config().clone();
+                tokio::spawn(async move {
+                    let mut temp_notifier = EmailNotifier::new(smtp_config);
+                    let _ = temp_notifier.notify(event, &body).await;
+                });
+            }
+        }
+    }
+}
+
+/// Get the system hostname (best-effort).
+fn gethostname() -> String {
+    std::fs::read_to_string("/etc/hostname")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "sentinel-host".to_string())
 }

@@ -107,6 +107,38 @@ pub const TEMP_HIGH_C: f32 = 75.0;
 /// Temperature above which color is "mid" (Celsius).
 pub const TEMP_MID_C: f32 = 60.0;
 
+// ── Thermal Monitoring ─────────────────────────────────────────────
+/// Default LibreHardwareMonitor HTTP JSON URL.
+pub const DEFAULT_LHM_URL: &str = "http://localhost:8085/data.json";
+/// Default thermal polling interval (seconds).
+pub const DEFAULT_THERMAL_POLL_SECS: u64 = 5;
+/// Default thermal warning threshold (Celsius).
+pub const DEFAULT_THERMAL_WARNING_C: f32 = 85.0;
+/// Default thermal critical threshold (Celsius).
+pub const DEFAULT_THERMAL_CRITICAL_C: f32 = 95.0;
+/// Default thermal emergency threshold (Celsius).
+pub const DEFAULT_THERMAL_EMERGENCY_C: f32 = 100.0;
+/// Default sustained seconds before shutdown escalation.
+pub const DEFAULT_THERMAL_SUSTAINED_SECS: u64 = 30;
+/// Thermal history ring buffer capacity (for sparklines).
+pub const THERMAL_HISTORY_CAPACITY: usize = 120;
+
+// ── Email Notifications ───────────────────────────────────────────
+/// Minimum interval between emails of the same event type (seconds).
+pub const EMAIL_RATE_LIMIT_SECS: u64 = 300;
+/// Default SMTP port for Gmail STARTTLS.
+pub const DEFAULT_SMTP_PORT: u16 = 587;
+/// Default SMTP server.
+pub const DEFAULT_SMTP_SERVER: &str = "smtp.gmail.com";
+
+// ── Auto-Shutdown ─────────────────────────────────────────────────
+/// Default schedule start hour (24h format) — shutdown only active during this window.
+pub const DEFAULT_SHUTDOWN_SCHEDULE_START: u8 = 0;
+/// Default schedule end hour (24h format).
+pub const DEFAULT_SHUTDOWN_SCHEDULE_END: u8 = 24;
+/// Grace period before actual shutdown (seconds).
+pub const SHUTDOWN_GRACE_PERIOD_SECS: u64 = 30;
+
 // ── AI / Claude API ───────────────────────────────────────────────
 /// Claude model identifier.
 pub const CLAUDE_MODEL: &str = "claude-opus-4-6";
@@ -202,6 +234,11 @@ pub fn custom_theme_dir() -> PathBuf {
 /// Returns `~/.config/sentinel/themes/<name>.toml`.
 pub fn custom_theme_path(name: &str) -> PathBuf {
     custom_theme_dir().join(format!("{}.toml", name))
+}
+
+/// Returns `~/.config/sentinel/.env` (SMTP credentials, never committed).
+pub fn env_file_path() -> PathBuf {
+    config_dir().join(".env")
 }
 
 /// Returns `~/.local/share/sentinel/`.

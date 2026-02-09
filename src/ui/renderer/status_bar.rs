@@ -82,6 +82,12 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState) {
             spans.push(badge("Ctrl+L", t.ai_accent));
             spans.push(dim(" Clear "));
         }
+        Tab::Security => {
+            spans.push(badge(":", t.accent_secondary));
+            spans.push(dim(" listeners "));
+            spans.push(badge(":", t.accent_secondary));
+            spans.push(dim(" port <n> "));
+        }
     }
 
     spans.push(sep());

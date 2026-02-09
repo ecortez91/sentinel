@@ -20,7 +20,10 @@ mod diagnostics;
 mod metrics;
 mod models;
 mod monitor;
+mod notifications;
+mod security;
 mod store;
+mod thermal;
 mod ui;
 mod utils;
 

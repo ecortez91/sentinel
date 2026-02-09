@@ -6,6 +6,8 @@ use crate::constants::*;
 use crate::diagnostics::SuggestedAction;
 use crate::models::{Alert, ProcessInfo, SystemSnapshot};
 use crate::monitor::ContainerInfo;
+use crate::thermal::shutdown::ShutdownManager;
+use crate::thermal::ThermalSnapshot;
 
 use super::theme::Theme;
 
@@ -142,6 +144,7 @@ pub enum FocusedWidget {
     CpuCores,
     Sparklines,
     Gpu,
+    Thermal,
     Network,
     Disk,
     AiInsight,
@@ -176,11 +179,18 @@ pub enum Tab {
     Processes,
     Alerts,
     AskAi,
+    Security,
 }
 
 impl Tab {
     pub fn all() -> &'static [Tab] {
-        &[Tab::Dashboard, Tab::Processes, Tab::Alerts, Tab::AskAi]
+        &[
+            Tab::Dashboard,
+            Tab::Processes,
+            Tab::Alerts,
+            Tab::AskAi,
+            Tab::Security,
+        ]
     }
 
     pub fn label(&self) -> String {
@@ -189,6 +199,7 @@ impl Tab {
             Tab::Processes => t!("tab.processes").to_string(),
             Tab::Alerts => t!("tab.alerts").to_string(),
             Tab::AskAi => t!("tab.ask_ai").to_string(),
+            Tab::Security => "Security".to_string(),
         }
     }
 
@@ -199,6 +210,7 @@ impl Tab {
             Tab::Processes => 1,
             Tab::Alerts => 2,
             Tab::AskAi => 3,
+            Tab::Security => 4,
         }
     }
 }
@@ -299,6 +311,14 @@ pub struct AppState {
     /// Whether the terminal supports CJK (double-width) characters.
     pub cjk_supported: bool,
 
+    // ── Thermal monitoring ─────────────────────────────────────
+    /// Latest thermal snapshot from LHM (None if LHM unavailable).
+    pub thermal: Option<ThermalSnapshot>,
+    /// Temperature history ring buffer for sparklines (CPU package temp).
+    pub temp_history: VecDeque<f32>,
+    /// Auto-shutdown state machine.
+    pub shutdown_manager: ShutdownManager,
+
     // ── Event ticker (recent events from store for dashboard) ──
     pub recent_events: Vec<String>,
 
@@ -329,7 +349,13 @@ fn apply_direction(cmp: Ordering, dir: SortDirection) -> Ordering {
 }
 
 impl AppState {
-    pub fn new(max_alerts: usize, has_api_key: bool, theme: Theme, cjk_supported: bool) -> Self {
+    pub fn new(
+        max_alerts: usize,
+        has_api_key: bool,
+        theme: Theme,
+        cjk_supported: bool,
+        shutdown_manager: ShutdownManager,
+    ) -> Self {
         Self {
             active_tab: Tab::Dashboard,
             system: None,
@@ -387,6 +413,10 @@ impl AppState {
             // Language
             current_lang: rust_i18n::locale().to_string(),
             cjk_supported,
+            // Thermal
+            thermal: None,
+            temp_history: VecDeque::with_capacity(THERMAL_HISTORY_CAPACITY),
+            shutdown_manager,
             // Event ticker
             recent_events: Vec::new(),
             // Command AI
@@ -493,7 +523,8 @@ impl AppState {
             Some(FocusedWidget::SystemGauges) => FocusedWidget::CpuCores,
             Some(FocusedWidget::CpuCores) => FocusedWidget::Sparklines,
             Some(FocusedWidget::Sparklines) => FocusedWidget::Network,
-            Some(FocusedWidget::Gpu) => FocusedWidget::Network,
+            Some(FocusedWidget::Gpu) => FocusedWidget::Thermal,
+            Some(FocusedWidget::Thermal) => FocusedWidget::Network,
             Some(FocusedWidget::Network) => FocusedWidget::Disk,
             Some(FocusedWidget::Disk) => FocusedWidget::TopProcesses,
             Some(FocusedWidget::AiInsight) => FocusedWidget::TopProcesses,
@@ -569,16 +600,18 @@ impl AppState {
             Tab::Dashboard => Tab::Processes,
             Tab::Processes => Tab::Alerts,
             Tab::Alerts => Tab::AskAi,
-            Tab::AskAi => Tab::Dashboard,
+            Tab::AskAi => Tab::Security,
+            Tab::Security => Tab::Dashboard,
         };
     }
 
     pub fn prev_tab(&mut self) {
         self.active_tab = match self.active_tab {
-            Tab::Dashboard => Tab::AskAi,
+            Tab::Dashboard => Tab::Security,
             Tab::Processes => Tab::Dashboard,
             Tab::Alerts => Tab::Processes,
             Tab::AskAi => Tab::Alerts,
+            Tab::Security => Tab::AskAi,
         };
     }
 
@@ -622,6 +655,7 @@ impl AppState {
                     self.ai_scroll -= 1;
                 }
             }
+            Tab::Security => {} // No scrollable content yet
         }
     }
 
@@ -644,6 +678,7 @@ impl AppState {
             Tab::AskAi => {
                 self.ai_scroll += 1;
             }
+            Tab::Security => {} // No scrollable content yet
         }
     }
 
@@ -961,7 +996,8 @@ mod tests {
 
     fn make_state() -> AppState {
         rust_i18n::set_locale("en");
-        AppState::new(100, false, Theme::default_dark(), true)
+        let shutdown_mgr = ShutdownManager::new(false, 100.0, 95.0, 30, 30, 0, 24);
+        AppState::new(100, false, Theme::default_dark(), true, shutdown_mgr)
     }
 
     fn make_process(pid: u32, name: &str, cpu: f32, mem_bytes: u64) -> ProcessInfo {
@@ -1047,8 +1083,8 @@ mod tests {
     // ── Tab ───────────────────────────────────────────────────────
 
     #[test]
-    fn tab_all_has_four() {
-        assert_eq!(Tab::all().len(), 4);
+    fn tab_all_has_five() {
+        assert_eq!(Tab::all().len(), 5);
     }
 
     #[test]
@@ -1057,6 +1093,7 @@ mod tests {
         assert_eq!(Tab::Processes.index(), 1);
         assert_eq!(Tab::Alerts.index(), 2);
         assert_eq!(Tab::AskAi.index(), 3);
+        assert_eq!(Tab::Security.index(), 4);
     }
 
     // ── Tab navigation ────────────────────────────────────────────
@@ -1072,12 +1109,16 @@ mod tests {
         s.next_tab();
         assert_eq!(s.active_tab, Tab::AskAi);
         s.next_tab();
+        assert_eq!(s.active_tab, Tab::Security);
+        s.next_tab();
         assert_eq!(s.active_tab, Tab::Dashboard);
     }
 
     #[test]
     fn prev_tab_cycles() {
         let mut s = make_state();
+        s.prev_tab();
+        assert_eq!(s.active_tab, Tab::Security);
         s.prev_tab();
         assert_eq!(s.active_tab, Tab::AskAi);
         s.prev_tab();
@@ -1615,7 +1656,8 @@ mod tests {
 
     #[test]
     fn cycle_lang_skips_cjk_when_unsupported() {
-        let mut s = AppState::new(100, false, Theme::default_dark(), false);
+        let shutdown_mgr = ShutdownManager::new(false, 100.0, 95.0, 30, 30, 0, 24);
+        let mut s = AppState::new(100, false, Theme::default_dark(), false, shutdown_mgr);
         s.current_lang = "en".to_string();
         // With cjk_supported=false, should skip "ja" and "zh"
         // LANGUAGES = ["en", "ja", "es", "de", "zh"]
@@ -1630,7 +1672,8 @@ mod tests {
 
     #[test]
     fn cycle_lang_includes_cjk_when_supported() {
-        let mut s = AppState::new(100, false, Theme::default_dark(), true);
+        let shutdown_mgr = ShutdownManager::new(false, 100.0, 95.0, 30, 30, 0, 24);
+        let mut s = AppState::new(100, false, Theme::default_dark(), true, shutdown_mgr);
         s.current_lang = "en".to_string();
         s.cycle_lang();
         assert_eq!(s.current_lang, "ja"); // CJK included

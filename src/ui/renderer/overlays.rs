@@ -218,7 +218,7 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
         // ── Navigation ──
         section("Navigation"),
         entry("Tab / Shift+Tab", "Switch tabs", t.accent),
-        entry("1 / 2 / 3 / 4", "Jump to tab (4 = Ask AI)", t.accent),
+        entry("1-5", "Jump to tab (5 = Security)", t.accent),
         entry("Up/Down / j / k", "Scroll up/down", t.accent),
         entry("PgUp / PgDn", "Page up/down", t.accent),
         entry("Home / End", "Jump to top/bottom", t.accent),
@@ -277,6 +277,12 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
         entry("Left / Right", "Move cursor in input", t.ai_accent),
         entry("Ctrl+L", "Clear conversation", t.ai_accent),
         Line::raw(""),
+        // ── Thermal ──
+        section("Thermal Guardian"),
+        entry("Ctrl+X", "ABORT thermal shutdown", t.danger),
+        dim_line("Auto-shutdown is OFF by default"),
+        dim_line("Requires config + .env double-gate"),
+        Line::raw(""),
         // ── Appearance ──
         section("Appearance"),
         entry("T", "Cycle color theme", t.accent),
@@ -311,6 +317,8 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
         ),
         entry("disk", "Disk usage analysis", t.accent_secondary),
         entry("listeners", "Active port listeners", t.accent_secondary),
+        entry("thermal", "Current thermal snapshot", t.accent_secondary),
+        entry("email-test", "Send test notification", t.accent_secondary),
         entry("config", "Show configuration", t.accent_secondary),
         entry("stats", "Event store statistics", t.accent_secondary),
         entry("<any text>", "Ask AI (natural language)", t.ai_accent),
@@ -487,6 +495,94 @@ pub fn render_renice_dialog(frame: &mut Frame, area: Rect, state: &AppState) {
                 Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
             ),
             Span::styled("Cancel", Style::default().fg(t.text_dim)),
+        ]),
+    ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Render the thermal shutdown overlay when shutdown state is active.
+pub fn render_shutdown_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
+    use crate::thermal::shutdown::ShutdownState;
+    let t = &state.theme;
+
+    let popup_width = 60.min(area.width.saturating_sub(4));
+    let popup_height = 10;
+    let popup_area = centered_rect(popup_width, popup_height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let border_color = match &state.shutdown_manager.state {
+        ShutdownState::Shutdown | ShutdownState::GracePeriod { .. } => t.danger,
+        ShutdownState::Counting { .. } => t.warning,
+        ShutdownState::Normal => return, // Don't render if normal
+    };
+
+    let title = format!(" {} ", state.shutdown_manager.state.label());
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let temp = state.thermal.as_ref().map(|t| t.max_temp).unwrap_or(0.0);
+
+    let remaining = state
+        .shutdown_manager
+        .state
+        .seconds_remaining()
+        .unwrap_or(0);
+
+    // Progress bar
+    let bar_width = inner.width.saturating_sub(4) as usize;
+    let max_secs = match &state.shutdown_manager.state {
+        ShutdownState::Counting { required_secs, .. } => *required_secs,
+        ShutdownState::GracePeriod { grace_secs, .. } => *grace_secs,
+        _ => 30,
+    };
+    let elapsed_ratio = if max_secs > 0 {
+        1.0 - (remaining as f64 / max_secs as f64)
+    } else {
+        1.0
+    };
+    let filled = (bar_width as f64 * elapsed_ratio).round() as usize;
+    let bar = format!(
+        "[{}{}]",
+        "█".repeat(filled.min(bar_width)),
+        "░".repeat(bar_width.saturating_sub(filled))
+    );
+
+    let lines = vec![
+        Line::raw(""),
+        Line::from(Span::styled(
+            format!("  Temperature: {:.1}°C", temp),
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+        Line::from(Span::styled(
+            format!("  Countdown: {}s remaining", remaining),
+            Style::default().fg(t.text_primary),
+        )),
+        Line::from(Span::styled(
+            format!("  {}", bar),
+            Style::default().fg(border_color),
+        )),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("  Press ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                "Ctrl+X",
+                Style::default().fg(t.success).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to ABORT shutdown", Style::default().fg(t.text_dim)),
         ]),
     ];
 
