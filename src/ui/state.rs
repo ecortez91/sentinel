@@ -295,6 +295,8 @@ pub struct AppState {
 
     // ── Language ────────────────────────────────────────────
     pub current_lang: String,
+    /// Whether the terminal supports CJK (double-width) characters.
+    pub cjk_supported: bool,
 
     // ── Event ticker (recent events from store for dashboard) ──
     pub recent_events: Vec<String>,
@@ -326,7 +328,7 @@ fn apply_direction(cmp: Ordering, dir: SortDirection) -> Ordering {
 }
 
 impl AppState {
-    pub fn new(max_alerts: usize, has_api_key: bool, theme: Theme) -> Self {
+    pub fn new(max_alerts: usize, has_api_key: bool, theme: Theme, cjk_supported: bool) -> Self {
         Self {
             active_tab: Tab::Dashboard,
             system: None,
@@ -382,6 +384,7 @@ impl AppState {
             container_scroll: 0,
             // Language
             current_lang: rust_i18n::locale().to_string(),
+            cjk_supported,
             // Event ticker
             recent_events: Vec::new(),
             // Command AI
@@ -402,14 +405,27 @@ impl AppState {
         self.theme = self.theme.next_builtin();
     }
 
-    /// Cycle to the next UI language.
+    /// Languages that require CJK font support.
+    const CJK_LANGS: &'static [&'static str] = &["ja", "zh"];
+
+    /// Cycle to the next UI language, skipping CJK languages if unsupported.
     pub fn cycle_lang(&mut self) {
-        let current_idx = LANGUAGES
+        let available: Vec<&str> = LANGUAGES
+            .iter()
+            .copied()
+            .filter(|&lang| self.cjk_supported || !Self::CJK_LANGS.contains(&lang))
+            .collect();
+
+        if available.is_empty() {
+            return;
+        }
+
+        let current_idx = available
             .iter()
             .position(|&l| l == self.current_lang)
             .unwrap_or(0);
-        let next_idx = (current_idx + 1) % LANGUAGES.len();
-        let next_lang = LANGUAGES[next_idx];
+        let next_idx = (current_idx + 1) % available.len();
+        let next_lang = available[next_idx];
         rust_i18n::set_locale(next_lang);
         self.current_lang = next_lang.to_string();
     }
@@ -943,7 +959,7 @@ mod tests {
 
     fn make_state() -> AppState {
         rust_i18n::set_locale("en");
-        AppState::new(100, false, Theme::default_dark())
+        AppState::new(100, false, Theme::default_dark(), true)
     }
 
     fn make_process(pid: u32, name: &str, cpu: f32, mem_bytes: u64) -> ProcessInfo {
@@ -1591,6 +1607,31 @@ mod tests {
         let initial = s.theme.name.clone();
         s.cycle_theme();
         assert_ne!(s.theme.name, initial);
+    }
+
+    // ── cycle_lang ────────────────────────────────────────────────
+
+    #[test]
+    fn cycle_lang_skips_cjk_when_unsupported() {
+        let mut s = AppState::new(100, false, Theme::default_dark(), false);
+        s.current_lang = "en".to_string();
+        // With cjk_supported=false, should skip "ja" and "zh"
+        // LANGUAGES = ["en", "ja", "es", "de", "zh"]
+        // Available: ["en", "es", "de"]
+        s.cycle_lang();
+        assert_eq!(s.current_lang, "es"); // skipped ja
+        s.cycle_lang();
+        assert_eq!(s.current_lang, "de");
+        s.cycle_lang();
+        assert_eq!(s.current_lang, "en"); // skipped zh, wrapped
+    }
+
+    #[test]
+    fn cycle_lang_includes_cjk_when_supported() {
+        let mut s = AppState::new(100, false, Theme::default_dark(), true);
+        s.current_lang = "en".to_string();
+        s.cycle_lang();
+        assert_eq!(s.current_lang, "ja"); // CJK included
     }
 
     // ── CommandResult ──────────────────────────────────────────────

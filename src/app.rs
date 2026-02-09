@@ -147,7 +147,10 @@ impl App {
             .or_else(|| ui::Theme::from_toml_file(&custom_theme_path(&config.theme)))
             .unwrap_or_default();
 
-        let mut state = AppState::new(config.max_alerts, has_key, initial_theme);
+        // Detect CJK font support before entering alternate screen
+        let cjk_supported = crate::utils::detect_cjk_support();
+
+        let mut state = AppState::new(config.max_alerts, has_key, initial_theme, cjk_supported);
         if let Some(method) = &auth_display {
             state.ai_auth_method = method.clone();
         }
