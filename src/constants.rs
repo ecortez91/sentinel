@@ -194,7 +194,17 @@ pub fn config_file_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+/// Returns `~/.config/sentinel/themes/`.
+pub fn custom_theme_dir() -> PathBuf {
+    config_dir().join("themes")
+}
+
 /// Returns `~/.config/sentinel/themes/<name>.toml`.
 pub fn custom_theme_path(name: &str) -> PathBuf {
-    config_dir().join("themes").join(format!("{}.toml", name))
+    custom_theme_dir().join(format!("{}.toml", name))
+}
+
+/// Returns `~/.local/share/sentinel/`.
+pub fn data_dir() -> PathBuf {
+    home_dir().join(".local").join("share").join("sentinel")
 }

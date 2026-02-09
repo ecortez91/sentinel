@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
@@ -169,98 +169,181 @@ fn detail_line<'a>(label: &str, value: &str, t: &crate::ui::theme::Theme) -> Lin
 
 pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
     let t = &state.theme;
-    let popup_width = 55;
-    let popup_height = 40;
+    let popup_width = 62.min(area.width.saturating_sub(4));
+    let popup_height = area.height.saturating_sub(4).min(50);
     let popup_area = centered_rect(popup_width, popup_height, area);
 
     frame.render_widget(Clear, popup_area);
 
-    let help_entry = |key: &str, desc: &str, color: ratatui::style::Color| -> Line {
+    let block = Block::default()
+        .title(Span::styled(
+            " Help (Up/Down scroll, Esc close) ",
+            t.header_style(),
+        ))
+        .borders(Borders::ALL)
+        .border_style(t.border_highlight_style());
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let entry = |key: &str, desc: &str, color: ratatui::style::Color| -> Line {
         Line::from(vec![
             Span::styled(
-                format!("  {:<20}", key),
+                format!("  {:<22}", key),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
             Span::styled(desc.to_string(), Style::default().fg(t.text_primary)),
         ])
     };
 
-    let help_text = vec![
+    let section = |title: &str| -> Line {
         Line::from(Span::styled(
-            "  SENTINEL - Keyboard Shortcuts",
+            format!(" {}", title),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ))
+    };
+
+    let dim_line = |text: &str| -> Line {
+        Line::from(Span::styled(
+            format!("  {}", text),
+            Style::default().fg(t.text_muted),
+        ))
+    };
+
+    let lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            " SENTINEL - Complete Reference",
             t.header_style(),
         )),
         Line::raw(""),
-        help_entry("Tab / Shift+Tab", "Switch tabs", t.accent),
-        help_entry("1 / 2 / 3 / 4", "Jump to tab (4 = Ask AI)", t.accent),
-        help_entry("Up/Down / j / k", "Scroll up/down", t.accent),
-        help_entry("PgUp / PgDn", "Page up/down", t.accent),
-        help_entry("s", "Cycle sort column", t.accent),
-        help_entry("r", "Reverse sort direction", t.accent),
-        help_entry("/", "Filter processes", t.accent),
-        help_entry("k", "SIGTERM selected process", t.warning),
-        help_entry("K (shift)", "SIGKILL selected process", t.danger),
-        help_entry("Enter", "Process detail popup", t.accent),
-        help_entry("t", "Toggle process tree view", t.accent),
-        help_entry("x", "Signal picker (process)", t.warning),
-        help_entry("n", "Renice process", t.accent),
-        help_entry("T", "Cycle color theme", t.accent),
-        help_entry("L", "Cycle UI language", t.accent),
-        help_entry("+/- (Dashboard)", "Zoom history charts", t.accent),
-        help_entry("f (Dashboard)", "Focus/expand widget", t.accent),
-        help_entry("a", "Ask AI about process", t.ai_accent),
-        help_entry(":", "Command palette", t.accent_secondary),
-        help_entry("  Tab (in results)", "Cycle actions", t.accent_secondary),
-        help_entry(
-            "  1-9 (in results)",
+        // ── Navigation ──
+        section("Navigation"),
+        entry("Tab / Shift+Tab", "Switch tabs", t.accent),
+        entry("1 / 2 / 3 / 4", "Jump to tab (4 = Ask AI)", t.accent),
+        entry("Up/Down / j / k", "Scroll up/down", t.accent),
+        entry("PgUp / PgDn", "Page up/down", t.accent),
+        entry("Home / End", "Jump to top/bottom", t.accent),
+        entry("Esc", "Close popup / clear filter", t.accent),
+        entry("q / Ctrl+C", "Quit", t.accent),
+        Line::raw(""),
+        // ── Processes ──
+        section("Processes Tab"),
+        entry("s", "Cycle sort column", t.accent),
+        entry("r", "Reverse sort direction", t.accent),
+        entry("/", "Filter by name/cmd/PID", t.accent),
+        entry("Enter", "Process detail popup", t.accent),
+        entry("t", "Toggle process tree view", t.accent),
+        entry("k", "SIGTERM selected process", t.warning),
+        entry("K (shift)", "SIGKILL selected process", t.danger),
+        entry("x", "Signal picker (choose signal)", t.warning),
+        entry("n", "Renice process", t.accent),
+        entry("a", "Ask AI about process", t.ai_accent),
+        Line::raw(""),
+        // ── Renice ──
+        section("Renice Dialog"),
+        entry("Left / Right", "Adjust nice (+/-5)", t.accent),
+        entry("h / l", "Fine-adjust nice (+/-1)", t.accent),
+        entry("Enter", "Apply", t.accent),
+        entry("Esc", "Cancel", t.accent),
+        Line::raw(""),
+        // ── Dashboard ──
+        section("Dashboard"),
+        entry("+ / -", "Zoom history charts", t.accent),
+        entry("f", "Focus/expand widget", t.accent),
+        entry("F", "Cycle between widgets", t.accent),
+        entry("e", "Expand/collapse AI insight", t.ai_accent),
+        Line::raw(""),
+        // ── Command Palette ──
+        section("Command Palette"),
+        entry(":", "Open command palette", t.accent_secondary),
+        entry(
+            "Tab (in results)",
+            "Cycle executable actions",
+            t.accent_secondary,
+        ),
+        entry(
+            "1-9 (in results)",
             "Quick-select action",
             t.accent_secondary,
         ),
-        help_entry("Esc", "Clear filter / close help", t.accent),
-        help_entry("q", "Quit", t.accent),
+        entry(
+            "Enter (in results)",
+            "Execute selected action",
+            t.accent_secondary,
+        ),
         Line::raw(""),
-        Line::from(Span::styled(
-            "  Ask AI Tab:",
-            Style::default()
-                .fg(t.ai_accent)
-                .add_modifier(Modifier::BOLD),
-        )),
-        help_entry("Enter", "Send question to Claude", t.accent),
-        help_entry("Ctrl+L", "Clear conversation", t.accent),
+        // ── Ask AI ──
+        section("Ask AI Tab"),
+        entry("Enter", "Focus input / send query", t.ai_accent),
+        entry("Left / Right", "Move cursor in input", t.ai_accent),
+        entry("Ctrl+L", "Clear conversation", t.ai_accent),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled("  Thresholds: ", Style::default().fg(t.text_dim)),
-            Span::styled(
-                "CPU >50% warn, >90% crit",
-                Style::default().fg(t.text_muted),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("              ", Style::default().fg(t.text_dim)),
-            Span::styled(
-                "RAM >1GiB warn, >2GiB crit/proc",
-                Style::default().fg(t.text_muted),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("              ", Style::default().fg(t.text_dim)),
-            Span::styled(
-                "System RAM >75% warn, >90% crit",
-                Style::default().fg(t.text_muted),
-            ),
-        ]),
+        // ── Appearance ──
+        section("Appearance"),
+        entry("T", "Cycle color theme", t.accent),
+        entry("L", "Cycle UI language", t.accent),
+        Line::raw(""),
+        // ── Mouse ──
+        section("Mouse Support"),
+        entry("Scroll wheel", "Scroll lists / popups", t.accent),
+        entry("Left-click tab", "Switch to that tab", t.accent),
+        entry("Left-click row", "Select process", t.accent),
+        entry("Right-click row", "Open process detail", t.accent),
+        Line::raw(""),
+        // ── Commands ──
+        section("Commands (press : then type)"),
+        entry("why / slow", "Resource contention", t.accent_secondary),
+        entry(
+            "timeline [min]",
+            "What happened recently",
+            t.accent_secondary,
+        ),
+        entry("events [min]", "Event timeline log", t.accent_secondary),
+        entry(
+            "port <number>",
+            "Who's using this port?",
+            t.accent_secondary,
+        ),
+        entry("pid <number>", "Deep process analysis", t.accent_secondary),
+        entry(
+            "anomaly [min]",
+            "Anomaly detection scan",
+            t.accent_secondary,
+        ),
+        entry("disk", "Disk usage analysis", t.accent_secondary),
+        entry("listeners", "Active port listeners", t.accent_secondary),
+        entry("config", "Show configuration", t.accent_secondary),
+        entry("stats", "Event store statistics", t.accent_secondary),
+        entry("<any text>", "Ask AI (natural language)", t.ai_accent),
+        Line::raw(""),
+        // ── Configuration ──
+        section("Configuration"),
+        dim_line("Config: ~/.config/sentinel/config.toml"),
+        dim_line("Themes: ~/.config/sentinel/themes/<name>.toml"),
+        dim_line("Data:   ~/.local/share/sentinel/sentinel.db"),
+        dim_line("CLI:    sentinel --help for all flags"),
+        Line::raw(""),
+        // ── Thresholds ──
+        section("Alert Thresholds"),
+        dim_line("CPU  >50% warn, >90% critical"),
+        dim_line("RAM  >1 GiB warn, >2 GiB critical (per process)"),
+        dim_line("Sys  >75% warn, >90% critical (system RAM)"),
     ];
 
-    let help = Paragraph::new(help_text)
-        .block(
-            Block::default()
-                .title(Span::styled(t!("title.help").to_string(), t.header_style()))
-                .borders(Borders::ALL)
-                .border_style(t.border_highlight_style()),
-        )
-        .wrap(Wrap { trim: false });
+    // Scrolling
+    let visible_height = inner.height as usize;
+    let total_lines = lines.len();
+    let scroll = state
+        .help_scroll
+        .min(total_lines.saturating_sub(visible_height));
 
-    frame.render_widget(help, popup_area);
+    let visible_lines: Vec<Line> = lines
+        .into_iter()
+        .skip(scroll)
+        .take(visible_height)
+        .collect();
+
+    frame.render_widget(Paragraph::new(visible_lines), inner);
+    render_scrollbar(frame, inner, total_lines, scroll);
 }
 
 pub fn render_signal_picker(frame: &mut Frame, area: Rect, state: &AppState) {

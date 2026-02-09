@@ -610,6 +610,11 @@ impl App {
             return self.handle_key_command_result(key);
         }
 
+        // Help overlay mode (scrollable)
+        if self.state.show_help {
+            return self.handle_key_help(key);
+        }
+
         // Process detail popup mode
         if self.state.show_process_detail {
             return self.handle_key_detail_popup(key);
@@ -658,6 +663,37 @@ impl App {
             }
             KeyCode::PageDown => {
                 self.state.detail_scroll += DETAIL_PAGE_STEP;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn handle_key_help(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                self.state.show_help = false;
+                self.state.help_scroll = 0;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.state.help_scroll > 0 {
+                    self.state.help_scroll -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.state.help_scroll += 1;
+            }
+            KeyCode::PageUp => {
+                self.state.help_scroll = self.state.help_scroll.saturating_sub(PAGE_SIZE);
+            }
+            KeyCode::PageDown => {
+                self.state.help_scroll += PAGE_SIZE;
+            }
+            KeyCode::Home => {
+                self.state.help_scroll = 0;
+            }
+            KeyCode::End => {
+                self.state.help_scroll = usize::MAX; // clamped at render time
             }
             _ => {}
         }
@@ -974,6 +1010,7 @@ impl App {
             KeyCode::Char(c) if self.state.active_tab == Tab::AskAi => {
                 if c == '?' {
                     self.state.show_help = !self.state.show_help;
+                    self.state.help_scroll = 0;
                 } else {
                     self.ai_typing = true;
                     self.state.ai_input_char(c);
@@ -995,11 +1032,12 @@ impl App {
             }
 
             // Help
-            KeyCode::Char('?') => self.state.show_help = !self.state.show_help,
+            KeyCode::Char('?') => {
+                self.state.show_help = !self.state.show_help;
+                self.state.help_scroll = 0;
+            }
             KeyCode::Esc => {
-                if self.state.show_help {
-                    self.state.show_help = false;
-                } else if self.state.active_tab == Tab::AskAi {
+                if self.state.active_tab == Tab::AskAi {
                     self.state.active_tab = Tab::Dashboard;
                 } else {
                     self.state.filter_text.clear();
@@ -1516,6 +1554,69 @@ impl App {
                 }
             }
 
+            // Configuration info
+            "config" | "settings" | "cfg" => {
+                let config_path = crate::constants::config_file_path();
+                let themes_dir = crate::constants::custom_theme_dir();
+                let db_path = crate::constants::data_dir().join("sentinel.db");
+
+                let config_exists = config_path.exists();
+                let db_exists = db_path.exists();
+                let db_size = if db_exists {
+                    std::fs::metadata(&db_path)
+                        .map(|m| crate::models::format_bytes(m.len()))
+                        .unwrap_or_else(|_| "?".to_string())
+                } else {
+                    "not created".to_string()
+                };
+
+                let mut lines = vec![
+                    "# Sentinel Configuration".to_string(),
+                    String::new(),
+                    "# File Paths".to_string(),
+                    format!(
+                        "  Config:  {} {}",
+                        config_path.display(),
+                        if config_exists { "(loaded)" } else { "(not found - using defaults)" }
+                    ),
+                    format!("  Themes:  {}/", themes_dir.display()),
+                    format!("  Data:    {} ({})", db_path.display(), db_size),
+                    String::new(),
+                    "# Current Settings".to_string(),
+                    format!("  Theme:         {}", self.state.theme.name),
+                    format!("  Language:      {}", self.state.current_lang),
+                    format!("  CJK support:   {}", if self.state.cjk_supported { "yes" } else { "no (JA/ZH skipped)" }),
+                    format!("  AI enabled:    {}", if self.has_key { "yes" } else { "no" }),
+                ];
+
+                if self.has_key {
+                    lines.push(format!("  AI auth:       {}", self.state.ai_auth_method));
+                }
+
+                lines.push(format!("  Docker:        {}", if self.state.docker_available { "yes" } else { "no" }));
+                lines.push(String::new());
+                lines.push("# CLI Flags".to_string());
+                lines.push("  Run 'sentinel --help' for all options".to_string());
+                lines.push("  Key flags: --no-ai, --theme, --refresh-rate,".to_string());
+                lines.push("             --prometheus, --lang, --no-auto-analysis".to_string());
+
+                if !config_exists {
+                    lines.push(String::new());
+                    lines.push("# Create Config File".to_string());
+                    lines.push(format!("  mkdir -p {}", config_path.parent().unwrap_or(std::path::Path::new("~")).display()));
+                    lines.push(format!("  $EDITOR {}", config_path.display()));
+                    lines.push(String::new());
+                    lines.push("  Example config.toml:".to_string());
+                    lines.push("  refresh_interval_ms = 1000".to_string());
+                    lines.push("  theme = \"gruvbox\"".to_string());
+                    lines.push("  lang = \"en\"".to_string());
+                    lines.push("  max_alerts = 100".to_string());
+                    lines.push("  auto_analysis_interval_secs = 300".to_string());
+                }
+
+                CommandResult::text_only(lines.join("\n"))
+            }
+
             // Event store stats
             "stats" | "db" | "store" => {
                 if let Some(ref store) = self.event_store {
@@ -1557,6 +1658,7 @@ impl App {
                  Events:\n\
                  \x20 events [minutes]   - Event timeline (default: 30 min)\n\n\
                  Meta:\n\
+                 \x20 config             - Show configuration & paths\n\
                  \x20 stats              - Event store statistics\n\
                  \x20 help               - This help message\n\n\
                  Actions:\n\

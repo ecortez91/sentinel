@@ -233,6 +233,7 @@ pub struct AppState {
     pub selected_process: usize,
     pub filter_text: String,
     pub show_help: bool,
+    pub help_scroll: usize,
     pub tick_count: u64,
     pub max_alerts: usize,
 
@@ -340,6 +341,7 @@ impl AppState {
             selected_process: 0,
             filter_text: String::new(),
             show_help: false,
+            help_scroll: 0,
             tick_count: 0,
             max_alerts,
             status_message: None,
