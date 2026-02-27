@@ -26,6 +26,10 @@ use crate::config::Config;
 use crate::constants::*;
 use crate::diagnostics::{DiagnosticEngine, SuggestedAction};
 use crate::notifications::{self, EmailNotifier, NotifyEvent};
+use crate::plugins::market::MarketPlugin;
+use crate::plugins::registry::PluginRegistry;
+use crate::plugins::settings::SettingsPlugin;
+use crate::plugins::PluginAction;
 use crate::thermal::LhmClient;
 use crate::thermal::shutdown::{ShutdownEvent, ShutdownManager};
 use crate::ui::CommandResult;
@@ -118,6 +122,14 @@ pub struct App {
 
     // Email notifications
     email_notifier: Option<EmailNotifier>,
+
+    // Plugin system
+    plugins: PluginRegistry,
+    /// AI channel for plugin-initiated AI analysis requests.
+    plugin_ai_tx: mpsc::UnboundedSender<AiEvent>,
+    plugin_ai_rx: mpsc::UnboundedReceiver<AiEvent>,
+    /// Which plugin (by index) is currently awaiting an AI response.
+    plugin_ai_target: Option<usize>,
 
     // Local loop state
     filtering: bool,
@@ -264,6 +276,34 @@ impl App {
             }
         };
 
+        // ── Plugin system ─────────────────────────────────────────
+        let (plugin_ai_tx, plugin_ai_rx) = mpsc::unbounded_channel::<AiEvent>();
+
+        // Load persisted favorites from SQLite
+        let favorites = if let Some(ref store) = event_store {
+            store.get_favorites().unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
+
+        let mut plugins = PluginRegistry::new();
+
+        // Register Market plugin (Binance)
+        let market_plugin = MarketPlugin::new(
+            config.market.enabled,
+            config.market.poll_interval_secs,
+            config.market.tickers.clone(),
+            favorites,
+        );
+        plugins.register(Box::new(market_plugin));
+
+        // Register Settings plugin (always enabled)
+        let settings_plugin = SettingsPlugin::new(true);
+        plugins.register(Box::new(settings_plugin));
+
+        // Set plugin count on state for tab navigation
+        state.plugin_count = plugins.enabled_count();
+
         Ok(Self {
             state,
             collector,
@@ -282,6 +322,10 @@ impl App {
             net_scan_interval: 10, // scan network sockets every ~10 ticks
             thermal_rx,
             email_notifier,
+            plugins,
+            plugin_ai_tx,
+            plugin_ai_rx,
+            plugin_ai_target: None,
             filtering: false,
             ai_typing: false,
             last_insight_time: None,
@@ -307,13 +351,17 @@ impl App {
 
         // Main loop
         loop {
-            terminal.draw(|frame| ui::render(frame, &self.state))?;
+            terminal.draw(|frame| ui::render_with_plugins(frame, &self.state, Some(&self.plugins)))?;
 
             self.drain_ai_events();
             self.drain_insight_events();
             self.drain_docker_events();
             self.drain_thermal_events();
             self.drain_command_ai_events();
+            self.drain_plugin_ai_events();
+
+            // Tick all plugins (drain their channels, update state)
+            self.plugins.tick_all();
 
             if event::poll(Duration::from_millis(EVENT_POLL_MS))? {
                 let terminal_event = event::read()?;
@@ -426,6 +474,29 @@ impl App {
                     self.state.command_ai_loading = false;
                     if let Some(ref mut cr) = self.state.command_result {
                         cr.text.push_str(&format!("\n\nError: {}", err));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drain AI events destined for a plugin (e.g., market sentiment analysis).
+    fn drain_plugin_ai_events(&mut self) {
+        while let Ok(event) = self.plugin_ai_rx.try_recv() {
+            if let Some(idx) = self.plugin_ai_target {
+                if let Some(plugin) = self.plugins.get_mut(idx) {
+                    match event {
+                        AiEvent::Chunk(text) => {
+                            plugin.receive_ai_chunk(&text);
+                        }
+                        AiEvent::Done => {
+                            plugin.ai_analysis_done();
+                            self.plugin_ai_target = None;
+                        }
+                        AiEvent::Error(err) => {
+                            plugin.ai_analysis_error(&err);
+                            self.plugin_ai_target = None;
+                        }
                     }
                 }
             }
@@ -546,6 +617,31 @@ impl App {
             if let Some(auth) = auth {
                 let client = ClaudeClient::new(auth);
                 let _ = client.ask_streaming(&full_system, messages, tx).await;
+            }
+        });
+    }
+
+    /// Dispatch an AI analysis request initiated by a plugin.
+    fn dispatch_plugin_ai(&mut self, plugin_index: usize, context: String) {
+        self.plugin_ai_target = Some(plugin_index);
+
+        let system_prompt = format!(
+            "You are Sentinel AI, an analyst embedded in a terminal monitor.\n\
+             Analyze the data below and provide a concise, data-driven analysis.\n\
+             Use bullet points. Be brief — this appears in a small panel."
+        );
+
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": context
+        })];
+        let tx = self.plugin_ai_tx.clone();
+
+        tokio::spawn(async move {
+            let auth = ClaudeClient::discover_auth().await;
+            if let Some(auth) = auth {
+                let client = ClaudeClient::new(auth);
+                let _ = client.ask_streaming(&system_prompt, messages, tx).await;
             }
         });
     }
@@ -920,6 +1016,29 @@ impl App {
 
     /// Handle keys in normal mode. Returns `true` if the app should quit.
     fn handle_key_normal(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        // ── Plugin tab delegation ─────────────────────────────
+        // If a plugin tab is active, delegate key handling to the plugin first.
+        if let Tab::Plugin(idx) = self.state.active_tab {
+            if let Some(plugin) = self.plugins.get_mut(idx) {
+                match plugin.handle_key(key) {
+                    PluginAction::Consumed => return false,
+                    PluginAction::RequestAiAnalysis(ctx) => {
+                        if self.has_key && self.claude_client.is_some() {
+                            self.dispatch_plugin_ai(idx, ctx);
+                        }
+                        return false;
+                    }
+                    PluginAction::SetStatus(msg) => {
+                        self.state.set_status(msg);
+                        return false;
+                    }
+                    PluginAction::Ignored => {
+                        // Fall through to normal key handling below
+                    }
+                }
+            }
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => {
                 if self.state.active_tab != Tab::AskAi {
@@ -939,6 +1058,37 @@ impl App {
             KeyCode::Char('4') => self.state.active_tab = Tab::Thermal,
             KeyCode::Char('5') => self.state.active_tab = Tab::Security,
             KeyCode::Char('6') => {
+                // If plugins exist, 6 goes to first plugin; otherwise AskAi
+                if self.state.plugin_count > 0 {
+                    self.state.active_tab = Tab::Plugin(0);
+                } else {
+                    self.state.active_tab = Tab::AskAi;
+                    self.ai_typing = true;
+                }
+            }
+            KeyCode::Char('7') => {
+                if self.state.plugin_count > 1 {
+                    self.state.active_tab = Tab::Plugin(1);
+                } else if self.state.plugin_count > 0 {
+                    // 7 = AskAi when 1 plugin exists
+                    self.state.active_tab = Tab::AskAi;
+                    self.ai_typing = true;
+                }
+            }
+            KeyCode::Char('8') => {
+                if self.state.plugin_count > 2 {
+                    self.state.active_tab = Tab::Plugin(2);
+                } else {
+                    // 8 = AskAi when 2 plugins exist
+                    let askai_num = 6 + self.state.plugin_count;
+                    if askai_num == 8 {
+                        self.state.active_tab = Tab::AskAi;
+                        self.ai_typing = true;
+                    }
+                }
+            }
+            KeyCode::Char('9') => {
+                // 9 always goes to AskAi (last tab) as a convenience shortcut
                 self.state.active_tab = Tab::AskAi;
                 self.ai_typing = true;
             }
@@ -1971,6 +2121,11 @@ impl App {
 
             self.state.update(system, processes, new_alerts);
 
+            // Sync plugin favorites to SQLite (every ~10 refresh cycles)
+            if self.state.tick_count % (REFRESH_THROTTLE_TICKS * 10) == 0 {
+                self.sync_plugin_favorites();
+            }
+
             // Update Prometheus metrics snapshot
             if let Some(ref metrics_handle) = self.shared_metrics {
                 if let Ok(mut snap) = metrics_handle.lock() {
@@ -2001,6 +2156,17 @@ impl App {
             self.state.ai_insight_scroll = 0;
             self.last_insight_time = Some(std::time::Instant::now());
             self.dispatch_insight();
+        }
+    }
+
+    /// Sync market plugin favorites to SQLite for persistence.
+    fn sync_plugin_favorites(&self) {
+        if let Some(ref store) = self.event_store {
+            for plugin in self.plugins.plugins() {
+                if let Some(favs) = plugin.favorites() {
+                    let _ = store.sync_favorites(favs);
+                }
+            }
         }
     }
 

@@ -25,9 +25,10 @@ use ratatui::{
 };
 
 use super::state::{AppState, Tab};
+use crate::plugins::registry::PluginRegistry;
 
-/// Top-level render function. Delegates to sub-renderers per tab.
-pub fn render(frame: &mut Frame, state: &AppState) {
+/// Render with plugin support.
+pub fn render_with_plugins(frame: &mut Frame, state: &AppState, plugins: Option<&PluginRegistry>) {
     let size = frame.area();
 
     let main_chunks = Layout::default()
@@ -39,8 +40,8 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         ])
         .split(size);
 
-    header::render_header(frame, main_chunks[0], state);
-    status_bar::render_status_bar(frame, main_chunks[2], state);
+    header::render_header_with_plugins(frame, main_chunks[0], state, plugins);
+    status_bar::render_status_bar_with_plugins(frame, main_chunks[2], state, plugins);
 
     match state.active_tab {
         Tab::Dashboard => dashboard::render_dashboard(frame, main_chunks[1], state),
@@ -49,6 +50,22 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         Tab::AskAi => ai_chat::render_ask_ai(frame, main_chunks[1], state),
         Tab::Thermal => thermal::render_thermal_tab(frame, main_chunks[1], state),
         Tab::Security => crate::security::render_security(frame, main_chunks[1], state),
+        Tab::Plugin(i) => {
+            if let Some(registry) = plugins {
+                if let Some(plugin) = registry.get(i) {
+                    plugin.render(frame, main_chunks[1], &state.theme);
+                }
+            }
+        }
+    }
+
+    // Render plugin overlays (detail popups, etc.) for the active plugin tab
+    if let Tab::Plugin(i) = state.active_tab {
+        if let Some(registry) = plugins {
+            if let Some(plugin) = registry.get(i) {
+                plugin.render_overlay(frame, size, &state.theme);
+            }
+        }
     }
 
     if state.show_process_detail {
@@ -64,7 +81,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
     }
 
     if state.show_help {
-        overlays::render_help_overlay(frame, size, state);
+        overlays::render_help_overlay_with_plugins(frame, size, state, plugins);
     }
 
     if state.command_result.is_some() {

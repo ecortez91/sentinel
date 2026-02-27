@@ -37,6 +37,8 @@ pub struct Config {
     pub thermal: ThermalConfig,
     /// Email notification configuration
     pub notifications: NotificationConfig,
+    /// Market data plugin configuration
+    pub market: MarketConfig,
 }
 
 /// Thermal monitoring settings (LibreHardwareMonitor integration).
@@ -74,6 +76,36 @@ impl Default for ThermalConfig {
             auto_shutdown_enabled: false,
             shutdown_schedule_start: DEFAULT_SHUTDOWN_SCHEDULE_START,
             shutdown_schedule_end: DEFAULT_SHUTDOWN_SCHEDULE_END,
+        }
+    }
+}
+
+/// Market data plugin settings (Binance integration).
+#[derive(Debug, Clone)]
+pub struct MarketConfig {
+    /// Whether the market data plugin is enabled.
+    pub enabled: bool,
+    /// Polling interval in seconds.
+    pub poll_interval_secs: u64,
+    /// Watchlist of trading pairs (e.g., ["BTCUSDT", "ETHUSDT"]).
+    pub tickers: Vec<String>,
+    /// Default chart time range (1h, 4h, 1d, 7d, 30d).
+    pub default_chart_range: String,
+}
+
+impl Default for MarketConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_interval_secs: DEFAULT_MARKET_POLL_SECS,
+            tickers: vec![
+                "BTCUSDT".to_string(),
+                "ETHUSDT".to_string(),
+                "SOLUSDT".to_string(),
+                "BNBUSDT".to_string(),
+                "XRPUSDT".to_string(),
+            ],
+            default_chart_range: "1d".to_string(),
         }
     }
 }
@@ -132,6 +164,7 @@ impl Default for Config {
             lang: "en".to_string(),
             thermal: ThermalConfig::default(),
             notifications: NotificationConfig::default(),
+            market: MarketConfig::default(),
         }
     }
 }
@@ -157,6 +190,7 @@ struct FileConfig {
     lang: Option<String>,
     thermal: Option<FileThermalConfig>,
     notifications: Option<FileNotificationConfig>,
+    market: Option<FileMarketConfig>,
 }
 
 /// TOML-deserializable thermal config section.
@@ -179,6 +213,16 @@ struct FileThermalConfig {
 #[serde(default)]
 struct FileNotificationConfig {
     email_enabled: Option<bool>,
+}
+
+/// TOML-deserializable market config section.
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+struct FileMarketConfig {
+    enabled: Option<bool>,
+    poll_interval_secs: Option<u64>,
+    tickers: Option<Vec<String>>,
+    default_chart_range: Option<String>,
 }
 
 impl Config {
@@ -291,6 +335,26 @@ impl Config {
         if let Some(n) = file_config.notifications {
             if let Some(v) = n.email_enabled {
                 config.notifications.email_enabled = v;
+            }
+        }
+
+        // Merge market config
+        if let Some(m) = file_config.market {
+            if let Some(v) = m.enabled {
+                config.market.enabled = v;
+            }
+            if let Some(v) = m.poll_interval_secs {
+                config.market.poll_interval_secs = v.max(10); // min 10s
+            }
+            if let Some(v) = m.tickers {
+                if !v.is_empty() {
+                    config.market.tickers = v;
+                }
+            }
+            if let Some(v) = m.default_chart_range {
+                if !v.is_empty() {
+                    config.market.default_chart_range = v;
+                }
             }
         }
 

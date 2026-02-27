@@ -265,7 +265,12 @@ impl EventStore {
                 state       TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_net_ts ON network_sockets(ts);
-            CREATE INDEX IF NOT EXISTS idx_net_port ON network_sockets(local_port, ts);",
+            CREATE INDEX IF NOT EXISTS idx_net_port ON network_sockets(local_port, ts);
+
+            CREATE TABLE IF NOT EXISTS favorites (
+                coin_id     TEXT PRIMARY KEY,
+                added_at    INTEGER NOT NULL
+            );",
         )?;
 
         Ok(())
@@ -701,6 +706,56 @@ impl EventStore {
             counts.insert(kind, count);
         }
         Ok(counts)
+    }
+
+    // ── Favorites (market plugin persistence) ───────────────────
+
+    /// Add a coin ID to favorites.
+    pub fn add_favorite(&self, coin_id: &str) -> SqlResult<()> {
+        let ts = now_epoch_ms();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO favorites (coin_id, added_at) VALUES (?1, ?2)",
+            params![coin_id, ts],
+        )?;
+        Ok(())
+    }
+
+    /// Remove a coin ID from favorites.
+    pub fn remove_favorite(&self, coin_id: &str) -> SqlResult<()> {
+        self.conn
+            .execute("DELETE FROM favorites WHERE coin_id = ?1", params![coin_id])?;
+        Ok(())
+    }
+
+    /// Get all favorite coin IDs.
+    pub fn get_favorites(&self) -> SqlResult<std::collections::HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT coin_id FROM favorites ORDER BY added_at ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut set = std::collections::HashSet::new();
+        for row in rows {
+            set.insert(row?);
+        }
+        Ok(set)
+    }
+
+    /// Sync favorites: add new ones, remove stale ones.
+    /// Efficient: only writes diffs.
+    pub fn sync_favorites(&self, current: &std::collections::HashSet<String>) -> SqlResult<()> {
+        let stored = self.get_favorites()?;
+
+        // Add new favorites
+        for id in current.difference(&stored) {
+            self.add_favorite(id)?;
+        }
+
+        // Remove stale favorites
+        for id in stored.difference(current) {
+            self.remove_favorite(id)?;
+        }
+
+        Ok(())
     }
 
     // ── Retention / cleanup ───────────────────────────────────────
@@ -1346,5 +1401,87 @@ mod tests {
     fn format_age_hours() {
         assert_eq!(format_age_ms(3600000), "1h ago");
         assert_eq!(format_age_ms(7200000), "2h ago");
+    }
+
+    // ── Favorites persistence ─────────────────────────────────────
+
+    #[test]
+    fn add_and_get_favorites() {
+        let store = EventStore::open(None).unwrap();
+        store.add_favorite("bitcoin").unwrap();
+        store.add_favorite("ethereum").unwrap();
+
+        let favs = store.get_favorites().unwrap();
+        assert_eq!(favs.len(), 2);
+        assert!(favs.contains("bitcoin"));
+        assert!(favs.contains("ethereum"));
+    }
+
+    #[test]
+    fn remove_favorite() {
+        let store = EventStore::open(None).unwrap();
+        store.add_favorite("bitcoin").unwrap();
+        store.add_favorite("ethereum").unwrap();
+        store.remove_favorite("bitcoin").unwrap();
+
+        let favs = store.get_favorites().unwrap();
+        assert_eq!(favs.len(), 1);
+        assert!(!favs.contains("bitcoin"));
+        assert!(favs.contains("ethereum"));
+    }
+
+    #[test]
+    fn add_favorite_is_idempotent() {
+        let store = EventStore::open(None).unwrap();
+        store.add_favorite("bitcoin").unwrap();
+        store.add_favorite("bitcoin").unwrap(); // INSERT OR REPLACE
+
+        let favs = store.get_favorites().unwrap();
+        assert_eq!(favs.len(), 1);
+    }
+
+    #[test]
+    fn remove_nonexistent_favorite_is_noop() {
+        let store = EventStore::open(None).unwrap();
+        // Should not error
+        store.remove_favorite("doesnotexist").unwrap();
+        let favs = store.get_favorites().unwrap();
+        assert!(favs.is_empty());
+    }
+
+    #[test]
+    fn sync_favorites_adds_and_removes() {
+        let store = EventStore::open(None).unwrap();
+        // Pre-populate with bitcoin and ethereum
+        store.add_favorite("bitcoin").unwrap();
+        store.add_favorite("ethereum").unwrap();
+
+        // Sync with a new set that drops ethereum, adds solana
+        let mut current = std::collections::HashSet::new();
+        current.insert("bitcoin".to_string());
+        current.insert("solana".to_string());
+        store.sync_favorites(&current).unwrap();
+
+        let favs = store.get_favorites().unwrap();
+        assert_eq!(favs.len(), 2);
+        assert!(favs.contains("bitcoin"));
+        assert!(favs.contains("solana"));
+        assert!(!favs.contains("ethereum"));
+    }
+
+    #[test]
+    fn sync_favorites_empty_to_empty() {
+        let store = EventStore::open(None).unwrap();
+        let empty = std::collections::HashSet::new();
+        store.sync_favorites(&empty).unwrap();
+        let favs = store.get_favorites().unwrap();
+        assert!(favs.is_empty());
+    }
+
+    #[test]
+    fn get_favorites_empty_initially() {
+        let store = EventStore::open(None).unwrap();
+        let favs = store.get_favorites().unwrap();
+        assert!(favs.is_empty());
     }
 }

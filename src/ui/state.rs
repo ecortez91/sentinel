@@ -173,6 +173,10 @@ pub struct ProcessDetail {
 }
 
 /// Which tab is currently active in the UI.
+///
+/// Core tabs are hardcoded enum variants. Plugins get dynamic tabs
+/// via `Tab::Plugin(index)` where the index refers to the plugin's
+/// position in the `PluginRegistry`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Dashboard,
@@ -180,19 +184,27 @@ pub enum Tab {
     Alerts,
     Thermal,
     Security,
+    /// Plugin tab, identified by index in the plugin registry.
+    Plugin(usize),
     AskAi,
 }
 
 impl Tab {
-    pub fn all() -> &'static [Tab] {
-        &[
+    /// Build the full tab list including plugin tabs.
+    /// Plugin tabs are inserted between Security and AskAi.
+    pub fn all_with_plugins(plugin_count: usize) -> Vec<Tab> {
+        let mut tabs = vec![
             Tab::Dashboard,
             Tab::Processes,
             Tab::Alerts,
             Tab::Thermal,
             Tab::Security,
-            Tab::AskAi,
-        ]
+        ];
+        for i in 0..plugin_count {
+            tabs.push(Tab::Plugin(i));
+        }
+        tabs.push(Tab::AskAi);
+        tabs
     }
 
     pub fn label(&self) -> String {
@@ -202,7 +214,22 @@ impl Tab {
             Tab::Alerts => t!("tab.alerts").to_string(),
             Tab::Thermal => "Thermal".to_string(),
             Tab::Security => "Security".to_string(),
+            Tab::Plugin(_) => "Plugin".to_string(), // overridden by renderer
             Tab::AskAi => t!("tab.ask_ai").to_string(),
+        }
+    }
+
+    /// Label with plugin name resolution.
+    pub fn label_with_plugins(&self, plugins: &crate::plugins::registry::PluginRegistry) -> String {
+        match self {
+            Tab::Plugin(i) => {
+                if let Some(p) = plugins.get(*i) {
+                    p.tab_label().to_string()
+                } else {
+                    format!("Plugin {}", i)
+                }
+            }
+            _ => self.label(),
         }
     }
 
@@ -214,7 +241,8 @@ impl Tab {
             Tab::Alerts => 2,
             Tab::Thermal => 3,
             Tab::Security => 4,
-            Tab::AskAi => 5,
+            Tab::Plugin(i) => 5 + i,
+            Tab::AskAi => 5, // dynamic, but fallback
         }
     }
 }
@@ -341,6 +369,10 @@ pub struct AppState {
     pub command_result_selected_action: usize,
     /// Whether we're showing a confirmation dialog for the selected action.
     pub show_action_confirm: bool,
+
+    // ── Plugin system ─────────────────────────────────────
+    /// Number of enabled plugins (for tab navigation).
+    pub plugin_count: usize,
 }
 
 /// Apply sort direction to an ordering.
@@ -433,6 +465,8 @@ impl AppState {
             command_result_scroll: 0,
             command_result_selected_action: 0,
             show_action_confirm: false,
+            // Plugins
+            plugin_count: 0,
         }
     }
 
@@ -599,26 +633,34 @@ impl AppState {
         }
     }
 
+    /// Navigate to next tab. Uses plugin_count for dynamic tab list.
     pub fn next_tab(&mut self) {
-        self.active_tab = match self.active_tab {
-            Tab::Dashboard => Tab::Processes,
-            Tab::Processes => Tab::Alerts,
-            Tab::Alerts => Tab::Thermal,
-            Tab::Thermal => Tab::Security,
-            Tab::Security => Tab::AskAi,
-            Tab::AskAi => Tab::Dashboard,
-        };
+        self.next_tab_with_plugins(self.plugin_count);
     }
 
+    /// Navigate to previous tab. Uses plugin_count for dynamic tab list.
     pub fn prev_tab(&mut self) {
-        self.active_tab = match self.active_tab {
-            Tab::Dashboard => Tab::AskAi,
-            Tab::Processes => Tab::Dashboard,
-            Tab::Alerts => Tab::Processes,
-            Tab::Thermal => Tab::Alerts,
-            Tab::Security => Tab::Thermal,
-            Tab::AskAi => Tab::Security,
-        };
+        self.prev_tab_with_plugins(self.plugin_count);
+    }
+
+    fn next_tab_with_plugins(&mut self, plugin_count: usize) {
+        let tabs = Tab::all_with_plugins(plugin_count);
+        if let Some(pos) = tabs.iter().position(|t| *t == self.active_tab) {
+            let next = (pos + 1) % tabs.len();
+            self.active_tab = tabs[next];
+        } else {
+            self.active_tab = Tab::Dashboard;
+        }
+    }
+
+    fn prev_tab_with_plugins(&mut self, plugin_count: usize) {
+        let tabs = Tab::all_with_plugins(plugin_count);
+        if let Some(pos) = tabs.iter().position(|t| *t == self.active_tab) {
+            let prev = if pos == 0 { tabs.len() - 1 } else { pos - 1 };
+            self.active_tab = tabs[prev];
+        } else {
+            self.active_tab = Tab::Dashboard;
+        }
     }
 
     pub fn cycle_sort(&mut self) {
@@ -661,8 +703,9 @@ impl AppState {
                     self.ai_scroll -= 1;
                 }
             }
-            Tab::Thermal => {}  // Scrolling handled by thermal tab renderer
-            Tab::Security => {} // No scrollable content yet
+            Tab::Thermal => {}   // Scrolling handled by thermal tab renderer
+            Tab::Security => {}  // No scrollable content yet
+            Tab::Plugin(_) => {} // Handled by plugin.handle_key()
         }
     }
 
@@ -685,8 +728,9 @@ impl AppState {
             Tab::AskAi => {
                 self.ai_scroll += 1;
             }
-            Tab::Thermal => {}  // Scrolling handled by thermal tab renderer
-            Tab::Security => {} // No scrollable content yet
+            Tab::Thermal => {}   // Scrolling handled by thermal tab renderer
+            Tab::Security => {}  // No scrollable content yet
+            Tab::Plugin(_) => {} // Handled by plugin.handle_key()
         }
     }
 
@@ -1091,8 +1135,18 @@ mod tests {
     // ── Tab ───────────────────────────────────────────────────────
 
     #[test]
-    fn tab_all_has_six() {
-        assert_eq!(Tab::all().len(), 6);
+    fn tab_all_with_zero_plugins_has_six() {
+        assert_eq!(Tab::all_with_plugins(0).len(), 6);
+    }
+
+    #[test]
+    fn tab_all_with_plugins_inserts_between_security_and_askai() {
+        let tabs = Tab::all_with_plugins(2);
+        assert_eq!(tabs.len(), 8); // 5 core + 2 plugins + AskAi
+        assert_eq!(tabs[4], Tab::Security);
+        assert_eq!(tabs[5], Tab::Plugin(0));
+        assert_eq!(tabs[6], Tab::Plugin(1));
+        assert_eq!(tabs[7], Tab::AskAi);
     }
 
     #[test]
@@ -1102,7 +1156,7 @@ mod tests {
         assert_eq!(Tab::Alerts.index(), 2);
         assert_eq!(Tab::Thermal.index(), 3);
         assert_eq!(Tab::Security.index(), 4);
-        assert_eq!(Tab::AskAi.index(), 5);
+        assert_eq!(Tab::Plugin(0).index(), 5);
     }
 
     // ── Tab navigation ────────────────────────────────────────────
@@ -1110,6 +1164,7 @@ mod tests {
     #[test]
     fn next_tab_cycles() {
         let mut s = make_state();
+        // plugin_count = 0, so core tabs only
         assert_eq!(s.active_tab, Tab::Dashboard);
         s.next_tab();
         assert_eq!(s.active_tab, Tab::Processes);
@@ -1136,6 +1191,21 @@ mod tests {
         assert_eq!(s.active_tab, Tab::Thermal);
         s.prev_tab();
         assert_eq!(s.active_tab, Tab::Alerts);
+    }
+
+    #[test]
+    fn next_tab_with_plugins_cycles() {
+        let mut s = make_state();
+        s.plugin_count = 2;
+        s.active_tab = Tab::Security;
+        s.next_tab();
+        assert_eq!(s.active_tab, Tab::Plugin(0));
+        s.next_tab();
+        assert_eq!(s.active_tab, Tab::Plugin(1));
+        s.next_tab();
+        assert_eq!(s.active_tab, Tab::AskAi);
+        s.next_tab();
+        assert_eq!(s.active_tab, Tab::Dashboard);
     }
 
     // ── Sort cycling ──────────────────────────────────────────────

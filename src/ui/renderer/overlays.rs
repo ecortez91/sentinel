@@ -9,6 +9,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::plugins::registry::PluginRegistry;
 use crate::ui::state::AppState;
 
 use super::helpers::{centered_rect, render_scrollbar, truncate_str};
@@ -167,7 +168,12 @@ fn detail_line<'a>(label: &str, value: &str, t: &crate::ui::theme::Theme) -> Lin
     ])
 }
 
-pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
+pub fn render_help_overlay_with_plugins(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    plugins: Option<&PluginRegistry>,
+) {
     let t = &state.theme;
     let popup_width = 62.min(area.width.saturating_sub(4));
     let popup_height = area.height.saturating_sub(4).min(50);
@@ -209,7 +215,7 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
         ))
     };
 
-    let lines: Vec<Line> = vec![
+    let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
             " SENTINEL - Complete Reference",
             t.header_style(),
@@ -218,7 +224,7 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
         // ── Navigation ──
         section("Navigation"),
         entry("Tab / Shift+Tab", "Switch tabs", t.accent),
-        entry("1-6", "Jump to tab (4=Thermal, 6=AI)", t.accent),
+        entry("1-9", "Jump to tab by number", t.accent),
         entry("Up/Down / j / k", "Scroll up/down", t.accent),
         entry("PgUp / PgDn", "Page up/down", t.accent),
         entry("Home / End", "Jump to top/bottom", t.accent),
@@ -323,6 +329,25 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
         entry("stats", "Event store statistics", t.accent_secondary),
         entry("<any text>", "Ask AI (natural language)", t.ai_accent),
         Line::raw(""),
+    ];
+
+    // ── Plugin help sections (dynamic) ──
+    if let Some(registry) = plugins {
+        for plugin in registry.plugins() {
+            if plugin.is_enabled() {
+                let help = plugin.help_entries();
+                if !help.is_empty() {
+                    lines.push(section(&format!("{} Tab", plugin.tab_label())));
+                    for (key, desc) in help {
+                        lines.push(entry(key, desc, t.accent));
+                    }
+                    lines.push(Line::raw(""));
+                }
+            }
+        }
+    }
+
+    lines.extend(vec![
         // ── Configuration ──
         section("Configuration"),
         dim_line("Config: ~/.config/sentinel/config.toml"),
@@ -335,7 +360,7 @@ pub fn render_help_overlay(frame: &mut Frame, area: Rect, state: &AppState) {
         dim_line("CPU  >50% warn, >90% critical"),
         dim_line("RAM  >1 GiB warn, >2 GiB critical (per process)"),
         dim_line("Sys  >75% warn, >90% critical (system RAM)"),
-    ];
+    ]);
 
     // Scrolling
     let visible_height = inner.height as usize;

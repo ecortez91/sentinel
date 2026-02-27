@@ -11,9 +11,15 @@ use ratatui::{
 };
 
 use crate::constants::STATUS_MESSAGE_TIMEOUT_SECS;
+use crate::plugins::registry::PluginRegistry;
 use crate::ui::state::{AppState, Tab};
 
-pub fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState) {
+pub fn render_status_bar_with_plugins(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    plugins: Option<&PluginRegistry>,
+) {
     let t = &state.theme;
 
     // Helper to create a keybind badge
@@ -93,6 +99,17 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, state: &AppState) {
             spans.push(dim(" listeners "));
             spans.push(badge(":", t.accent_secondary));
             spans.push(dim(" port <n> "));
+        }
+        Tab::Plugin(i) => {
+            // Show plugin-specific hints from the plugin trait
+            if let Some(registry) = plugins {
+                if let Some(plugin) = registry.get(i) {
+                    for (key, desc) in plugin.status_bar_hints() {
+                        spans.push(badge(key, t.accent));
+                        spans.push(dim(&format!(" {} ", desc)));
+                    }
+                }
+            }
         }
     }
 

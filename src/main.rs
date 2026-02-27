@@ -21,6 +21,7 @@ mod metrics;
 mod models;
 mod monitor;
 mod notifications;
+mod plugins;
 mod security;
 mod store;
 mod thermal;

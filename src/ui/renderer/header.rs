@@ -8,10 +8,16 @@ use ratatui::{
     Frame,
 };
 
+use crate::plugins::registry::PluginRegistry;
 use crate::ui::state::{AppState, Tab};
 use crate::utils::spinner_char;
 
-pub fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
+pub fn render_header_with_plugins(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    plugins: Option<&PluginRegistry>,
+) {
     let t = &state.theme;
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -44,24 +50,36 @@ pub fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
     );
     frame.render_widget(logo, chunks[0]);
 
-    // Tabs
-    let tabs: Vec<Span> = Tab::all()
+    // Tabs — build dynamic list including plugin tabs
+    let all_tabs = Tab::all_with_plugins(state.plugin_count);
+    let tabs: Vec<Span> = all_tabs
         .iter()
-        .map(|tab| {
-            if *tab == state.active_tab {
-                Span::styled(tab.label(), t.tab_active_style())
-            } else if *tab == Tab::AskAi {
-                Span::styled(tab.label(), Style::default().fg(t.ai_accent))
+        .enumerate()
+        .map(|(i, tab)| {
+            let label = if let Some(reg) = plugins {
+                tab.label_with_plugins(reg)
             } else {
-                Span::styled(tab.label(), t.tab_inactive_style())
+                tab.label()
+            };
+            // Add tab number prefix for quick-switch hint
+            let numbered = format!("{} {}", i + 1, label);
+            if *tab == state.active_tab {
+                Span::styled(numbered, t.tab_active_style())
+            } else if *tab == Tab::AskAi {
+                Span::styled(numbered, Style::default().fg(t.ai_accent))
+            } else if matches!(tab, Tab::Plugin(_)) {
+                Span::styled(numbered, t.tab_inactive_style())
+            } else {
+                Span::styled(numbered, t.tab_inactive_style())
             }
         })
         .collect();
 
+    let tab_count = tabs.len();
     let mut tab_spans = vec![Span::raw(" ")];
     for (i, tab) in tabs.into_iter().enumerate() {
         tab_spans.push(tab);
-        if i < Tab::all().len() - 1 {
+        if i < tab_count - 1 {
             tab_spans.push(Span::styled(" │ ", Style::default().fg(t.text_muted)));
         }
     }

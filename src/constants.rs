@@ -131,6 +131,10 @@ pub const DEFAULT_THERMAL_SUSTAINED_SECS: u64 = 30;
 /// Thermal history ring buffer capacity (for sparklines).
 pub const THERMAL_HISTORY_CAPACITY: usize = 120;
 
+// ── Market data (Binance) ─────────────────────────────────────────
+/// Default market data polling interval (seconds).
+pub const DEFAULT_MARKET_POLL_SECS: u64 = 30;
+
 // ── Email Notifications ───────────────────────────────────────────
 /// Minimum interval between emails of the same event type (seconds).
 pub const EMAIL_RATE_LIMIT_SECS: u64 = 300;

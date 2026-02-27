@@ -1,0 +1,143 @@
+//! Plugin architecture for Sentinel.
+//!
+//! Plugins extend Sentinel with new tabs, background tasks, keybinds,
+//! and renderers. They are compiled into the binary and registered at
+//! startup via the [`PluginRegistry`].
+//!
+//! Design principles:
+//! - Open/Closed: new plugins extend without modifying core code
+//! - Interface Segregation: default no-op implementations for optional methods
+//! - Dependency Inversion: core depends on `Plugin` trait, not concrete types
+
+pub mod market;
+pub mod registry;
+pub mod settings;
+
+use crossterm::event::KeyEvent;
+use ratatui::{layout::Rect, Frame};
+
+use crate::ui::theme::Theme;
+
+/// What the plugin wants the app to do after handling a key event.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum PluginAction {
+    /// Key was not consumed; let the app handle it.
+    Ignored,
+    /// Key was handled; do nothing else.
+    Consumed,
+    /// Request an AI analysis with the given context string.
+    RequestAiAnalysis(String),
+    /// Show a status bar message.
+    SetStatus(String),
+}
+
+/// Core plugin trait. Each plugin owns a tab, background polling,
+/// keybind handling, and rendering.
+///
+/// Default implementations are provided for optional methods so plugins
+/// only need to implement what they use (Interface Segregation Principle).
+#[allow(dead_code)]
+pub trait Plugin: Send {
+    /// Unique identifier (e.g., "market").
+    fn id(&self) -> &str;
+
+    /// Display name for the tab strip.
+    fn tab_label(&self) -> &str;
+
+    /// Whether this plugin is enabled and ready to render.
+    fn is_enabled(&self) -> bool;
+
+    /// Handle a key event while this plugin's tab is active.
+    /// Returns a [`PluginAction`] describing what should happen next.
+    fn handle_key(&mut self, _key: KeyEvent) -> PluginAction {
+        PluginAction::Ignored
+    }
+
+    /// Render the plugin's tab content into the given area.
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme);
+
+    /// Render any overlays (detail popups, etc.) on top of content.
+    fn render_overlay(&self, _frame: &mut Frame, _area: Rect, _theme: &Theme) {}
+
+    /// Called every tick to drain channels and update internal state.
+    fn tick(&mut self) {}
+
+    /// Command palette commands this plugin handles: `(name, description)`.
+    fn commands(&self) -> Vec<(&str, &str)> {
+        vec![]
+    }
+
+    /// Execute a command palette command. Returns result text if handled.
+    fn execute_command(&mut self, _cmd: &str, _args: &str) -> Option<String> {
+        None
+    }
+
+    /// Status bar hint spans for when this plugin's tab is active.
+    /// Returns `(key_label, description)` pairs.
+    fn status_bar_hints(&self) -> Vec<(&str, &str)> {
+        vec![]
+    }
+
+    /// Help overlay entries: `(key, description)` pairs.
+    fn help_entries(&self) -> Vec<(&str, &str)> {
+        vec![]
+    }
+
+    /// Return the set of favorite IDs for persistence (e.g., market favorites).
+    /// Default: empty set (plugin has no favorites to persist).
+    fn favorites(&self) -> Option<&std::collections::HashSet<String>> {
+        None
+    }
+
+    /// Accept streamed AI analysis text (called when AI chunks arrive).
+    fn receive_ai_chunk(&mut self, _chunk: &str) {}
+
+    /// Called when AI analysis streaming is complete.
+    fn ai_analysis_done(&mut self) {}
+
+    /// Called when AI analysis encounters an error.
+    fn ai_analysis_error(&mut self, _error: &str) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Color;
+
+    /// Minimal plugin for testing the trait contract.
+    struct TestPlugin {
+        enabled: bool,
+    }
+
+    impl Plugin for TestPlugin {
+        fn id(&self) -> &str {
+            "test"
+        }
+        fn tab_label(&self) -> &str {
+            "Test"
+        }
+        fn is_enabled(&self) -> bool {
+            self.enabled
+        }
+        fn render(&self, _frame: &mut Frame, _area: Rect, _theme: &Theme) {}
+    }
+
+    #[test]
+    fn default_methods_return_expected_values() {
+        let mut plugin = TestPlugin { enabled: true };
+        assert!(plugin.commands().is_empty());
+        assert!(plugin.status_bar_hints().is_empty());
+        assert!(plugin.help_entries().is_empty());
+        assert!(plugin.execute_command("foo", "").is_none());
+    }
+
+    #[test]
+    fn plugin_action_debug() {
+        // Verify all variants are constructible
+        let _ignored = PluginAction::Ignored;
+        let _consumed = PluginAction::Consumed;
+        let _ai = PluginAction::RequestAiAnalysis("test".into());
+        let _status = PluginAction::SetStatus("msg".into());
+    }
+}
