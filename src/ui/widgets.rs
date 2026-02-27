@@ -1,5 +1,6 @@
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Widget};
 
+use super::glyphs::Glyphs;
 use super::theme::Theme;
 
 /// A beautiful sparkline-style bar gauge with gradient coloring.
@@ -8,15 +9,17 @@ pub struct GradientGauge<'a> {
     pub label: String,
     pub show_value: bool,
     pub theme: &'a Theme,
+    pub glyphs: &'a Glyphs,
 }
 
 impl<'a> GradientGauge<'a> {
-    pub fn new(percent: f32, label: &str, theme: &'a Theme) -> Self {
+    pub fn new(percent: f32, label: &str, theme: &'a Theme, glyphs: &'a Glyphs) -> Self {
         Self {
             percent: percent.clamp(0.0, 100.0),
             label: label.to_string(),
             show_value: true,
             theme,
+            glyphs,
         }
     }
 }
@@ -43,26 +46,26 @@ impl Widget for GradientGauge<'_> {
         let bar_x = area.x + label_width;
         let filled = ((self.percent / 100.0) * bar_width as f32) as u16;
         let color = self.theme.usage_color(self.percent);
+        let g = self.glyphs;
 
-        // Block characters for smooth bar: ░ ▒ ▓ █
         for i in 0..bar_width {
             let (ch, style) = if i < filled {
-                ('█', Style::default().fg(color))
+                (g.filled, Style::default().fg(color))
             } else if i == filled {
                 // Partial fill for smooth transition
                 let frac = (self.percent / 100.0) * bar_width as f32 - filled as f32;
                 let partial = if frac > 0.75 {
-                    '▓'
+                    g.shade_dark
                 } else if frac > 0.5 {
-                    '▒'
+                    g.shade_medium
                 } else if frac > 0.25 {
-                    '░'
+                    g.shade_light
                 } else {
                     ' '
                 };
                 (partial, Style::default().fg(color))
             } else {
-                ('░', Style::default().fg(self.theme.gauge_bg))
+                (g.shade_light, Style::default().fg(self.theme.gauge_bg))
             };
             buf.set_string(bar_x + i, area.y, ch.to_string(), style);
         }
@@ -80,11 +83,16 @@ impl Widget for GradientGauge<'_> {
 pub struct CpuMiniChart<'a> {
     pub usages: &'a [f32],
     pub theme: &'a Theme,
+    pub glyphs: &'a Glyphs,
 }
 
 impl<'a> CpuMiniChart<'a> {
-    pub fn new(usages: &'a [f32], theme: &'a Theme) -> Self {
-        Self { usages, theme }
+    pub fn new(usages: &'a [f32], theme: &'a Theme, glyphs: &'a Glyphs) -> Self {
+        Self {
+            usages,
+            theme,
+            glyphs,
+        }
     }
 }
 
@@ -94,9 +102,7 @@ impl Widget for CpuMiniChart<'_> {
             return;
         }
 
-        // Each core gets vertical bar characters: ▁▂▃▄▅▆▇█
-        let bar_chars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
+        let bar_chars = &self.glyphs.bar_chars;
         let cores_to_show = (area.width as usize).min(self.usages.len());
 
         for (i, &usage) in self.usages.iter().take(cores_to_show).enumerate() {

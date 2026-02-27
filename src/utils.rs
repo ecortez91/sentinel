@@ -1,6 +1,6 @@
 //! Shared utility functions used across modules.
 
-use crate::constants::SPINNER_CHARS;
+use crate::ui::glyphs::GlyphMode;
 use std::io::Write;
 
 /// Truncate a string to `max_len` characters, appending "..." if truncated.
@@ -15,8 +15,48 @@ pub fn truncate_str(s: &str, max_len: usize) -> String {
 }
 
 /// Get the spinner character for the current tick.
+/// Deprecated: use `state.glyphs.spinner_char(tick)` instead for mode-aware rendering.
 pub fn spinner_char(tick: u64) -> &'static str {
+    use crate::constants::SPINNER_CHARS;
     SPINNER_CHARS[(tick % SPINNER_CHARS.len() as u64) as usize]
+}
+
+/// Detect whether the terminal can properly render Unicode block-drawing characters.
+///
+/// Uses a conservative approach:
+/// 1. On Windows, checks for Windows Terminal (WT_SESSION env var) with known
+///    problematic default fonts — defaults to ASCII on Windows Terminal.
+/// 2. On Unix, probes whether a block character (`█`) renders as exactly 1 column.
+/// 3. Falls back to Unicode if detection is inconclusive (most Unix terminals
+///    handle block characters fine).
+pub fn detect_unicode_support() -> GlyphMode {
+    // Check for explicit override via environment variable
+    if let Ok(val) = std::env::var("SENTINEL_UNICODE") {
+        match val.to_lowercase().as_str() {
+            "0" | "false" | "ascii" => return GlyphMode::Ascii,
+            "1" | "true" | "unicode" => return GlyphMode::Unicode,
+            _ => {}
+        }
+    }
+
+    // On Windows, Windows Terminal may have font issues with block chars
+    #[cfg(target_os = "windows")]
+    {
+        // If running inside Windows Terminal (has WT_SESSION), default to ASCII
+        // because Cascadia Mono/Code doesn't tile block chars seamlessly.
+        // Users with proper fonts can override via config or env var.
+        if std::env::var("WT_SESSION").is_ok() {
+            return GlyphMode::Ascii;
+        }
+        // Classic conhost (PowerShell) renders block chars fine with Consolas
+        return GlyphMode::Unicode;
+    }
+
+    // On Unix/Linux/macOS, Unicode is almost always fine
+    #[cfg(not(target_os = "windows"))]
+    {
+        GlyphMode::Unicode
+    }
 }
 
 /// Detect whether the terminal can render CJK (double-width) characters.

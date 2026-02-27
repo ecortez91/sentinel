@@ -1,3 +1,4 @@
+pub mod glyphs;
 mod renderer;
 mod state;
 pub mod theme;

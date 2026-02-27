@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{layout::Rect, Frame};
 
 use crate::plugins::{Plugin, PluginAction};
+use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
 
 /// Setting categories for navigation.
@@ -264,8 +265,8 @@ impl Plugin for SettingsPlugin {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        renderer::render_settings(frame, area, self, theme);
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme, glyphs: &Glyphs) {
+        renderer::render_settings(frame, area, self, theme, glyphs);
     }
 
     fn status_bar_hints(&self) -> Vec<(&str, &str)> {

@@ -53,7 +53,7 @@ pub fn render_with_plugins(frame: &mut Frame, state: &AppState, plugins: Option<
         Tab::Plugin(i) => {
             if let Some(registry) = plugins {
                 if let Some(plugin) = registry.get(i) {
-                    plugin.render(frame, main_chunks[1], &state.theme);
+                    plugin.render(frame, main_chunks[1], &state.theme, &state.glyphs);
                 }
             }
         }
@@ -63,7 +63,7 @@ pub fn render_with_plugins(frame: &mut Frame, state: &AppState, plugins: Option<
     if let Tab::Plugin(i) = state.active_tab {
         if let Some(registry) = plugins {
             if let Some(plugin) = registry.get(i) {
-                plugin.render_overlay(frame, size, &state.theme);
+                plugin.render_overlay(frame, size, &state.theme, &state.glyphs);
             }
         }
     }

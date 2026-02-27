@@ -472,10 +472,11 @@ pub fn render_renice_dialog(frame: &mut Frame, area: Rect, state: &AppState) {
         t.text_dim
     };
 
+    let g = &state.glyphs;
     let bar_width = 40.min(inner.width.saturating_sub(4)) as usize;
     let pos = ((nice + 20) as f64 / 39.0 * bar_width as f64) as usize;
     let bar: String = (0..bar_width)
-        .map(|i| if i == pos { '█' } else { '░' })
+        .map(|i| if i == pos { g.filled } else { g.shade_light })
         .collect();
 
     let lines = vec![
@@ -576,11 +577,14 @@ pub fn render_shutdown_overlay(frame: &mut Frame, area: Rect, state: &AppState) 
     } else {
         1.0
     };
+    let g = &state.glyphs;
     let filled = (bar_width as f64 * elapsed_ratio).round() as usize;
     let bar = format!(
         "[{}{}]",
-        "█".repeat(filled.min(bar_width)),
-        "░".repeat(bar_width.saturating_sub(filled))
+        g.filled.to_string().repeat(filled.min(bar_width)),
+        g.shade_light
+            .to_string()
+            .repeat(bar_width.saturating_sub(filled))
     );
 
     let lines = vec![
@@ -644,7 +648,7 @@ pub fn render_command_palette(frame: &mut Frame, area: Rect, state: &AppState) {
             state.command_input.clone(),
             Style::default().fg(t.text_primary),
         ),
-        Span::styled("█", Style::default().fg(t.accent)),
+        Span::styled(state.glyphs.cursor, Style::default().fg(t.accent)),
     ]);
 
     frame.render_widget(Paragraph::new(vec![input_line]), inner);

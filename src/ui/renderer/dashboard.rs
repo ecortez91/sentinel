@@ -4,7 +4,6 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    symbols,
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table},
     Frame,
@@ -13,7 +12,7 @@ use ratatui::{
 use crate::models::format_bytes;
 use crate::ui::state::{AppState, FocusedWidget};
 use crate::ui::widgets::{CpuMiniChart, GradientGauge};
-use crate::utils::{loading_dots, spinner_char};
+use crate::utils::loading_dots;
 
 use super::helpers::{format_rate, render_scrollbar, status_badge, truncate_str};
 
@@ -221,7 +220,7 @@ fn render_system_gauges(frame: &mut Frame, area: Rect, state: &AppState) {
     } else {
         "CPU  ".to_string()
     };
-    let cpu_gauge = GradientGauge::new(sys.global_cpu_usage, &cpu_label, t);
+    let cpu_gauge = GradientGauge::new(sys.global_cpu_usage, &cpu_label, t, &state.glyphs);
     frame.render_widget(cpu_gauge, gauge_chunks[0]);
 
     // Memory gauge
@@ -236,12 +235,12 @@ fn render_system_gauges(frame: &mut Frame, area: Rect, state: &AppState) {
     } else {
         mem_label
     };
-    let mem_gauge = GradientGauge::new(mem_pct, &mem_label_short, t);
+    let mem_gauge = GradientGauge::new(mem_pct, &mem_label_short, t, &state.glyphs);
     frame.render_widget(mem_gauge, gauge_chunks[1]);
 
     // Swap gauge
     let swap_pct = sys.swap_percent();
-    let swap_gauge = GradientGauge::new(swap_pct, "SWAP ", t);
+    let swap_gauge = GradientGauge::new(swap_pct, "SWAP ", t, &state.glyphs);
     frame.render_widget(swap_gauge, gauge_chunks[2]);
 
     // Load average + hostname + uptime
@@ -262,12 +261,18 @@ fn render_system_gauges(frame: &mut Frame, area: Rect, state: &AppState) {
             format!("{:.2}", sys.load_avg_15),
             Style::default().fg(t.text_primary),
         ),
-        Span::styled("  │  ", Style::default().fg(t.text_muted)),
+        Span::styled(
+            format!(" {} ", state.glyphs.separator.trim()),
+            Style::default().fg(t.text_muted),
+        ),
         Span::styled(
             sys.hostname.clone(),
             Style::default().fg(t.accent_secondary),
         ),
-        Span::styled("  │  ", Style::default().fg(t.text_muted)),
+        Span::styled(
+            format!(" {} ", state.glyphs.separator.trim()),
+            Style::default().fg(t.text_muted),
+        ),
         Span::styled(
             format!(
                 "uptime {}h {}m",
@@ -280,7 +285,10 @@ fn render_system_gauges(frame: &mut Frame, area: Rect, state: &AppState) {
 
     if let Some(ref temp) = sys.cpu_temp {
         if let Some(pkg) = temp.package_temp {
-            load_spans.push(Span::styled("  │  ", Style::default().fg(t.text_muted)));
+            load_spans.push(Span::styled(
+                format!(" {} ", state.glyphs.separator.trim()),
+                Style::default().fg(t.text_muted),
+            ));
             load_spans.push(Span::styled(
                 format!("{:.0}°C", pkg),
                 Style::default().fg(t.temp_color(pkg)),
@@ -293,25 +301,26 @@ fn render_system_gauges(frame: &mut Frame, area: Rect, state: &AppState) {
     // Battery gauge (if present)
     if let Some(ref bat) = sys.battery {
         if has_battery {
+            let g = &state.glyphs;
             let bat_label = match &bat.status {
                 crate::models::BatteryStatus::Charging => {
                     if let Some(ref tr) = bat.time_remaining {
-                        format!("BAT  ⚡ {}  ", tr)
+                        format!("BAT  {} {}  ", g.battery_charging, tr)
                     } else {
-                        "BAT  ⚡ Charging  ".to_string()
+                        format!("BAT  {} Charging  ", g.battery_charging)
                     }
                 }
                 crate::models::BatteryStatus::Discharging => {
                     if let Some(ref tr) = bat.time_remaining {
-                        format!("BAT  🔋 {}  ", tr)
+                        format!("BAT  {} {}  ", g.battery_discharging, tr)
                     } else {
-                        "BAT  🔋 Discharging  ".to_string()
+                        format!("BAT  {} Discharging  ", g.battery_discharging)
                     }
                 }
                 crate::models::BatteryStatus::Full => "BAT  Full  ".to_string(),
                 _ => "BAT  ".to_string(),
             };
-            let bat_gauge = GradientGauge::new(bat.percent, &bat_label, t);
+            let bat_gauge = GradientGauge::new(bat.percent, &bat_label, t, &state.glyphs);
             frame.render_widget(bat_gauge, gauge_chunks[4]);
         }
     }
@@ -350,7 +359,7 @@ fn render_cpu_cores(frame: &mut Frame, area: Rect, state: &AppState) {
             height: 1,
             ..content_area
         };
-        let chart = CpuMiniChart::new(&sys.cpu_usages, t);
+        let chart = CpuMiniChart::new(&sys.cpu_usages, t, &state.glyphs);
         frame.render_widget(chart, bar_area);
     }
 
@@ -429,7 +438,7 @@ fn render_sparklines(frame: &mut Frame, area: Rect, state: &AppState) {
         .data(&cpu_data)
         .max(100)
         .style(Style::default().fg(t.accent))
-        .bar_set(symbols::bar::NINE_LEVELS);
+        .bar_set(state.glyphs.bar_set.clone());
     frame.render_widget(cpu_spark, halves[0]);
 
     let mem_data: Vec<u64> = state
@@ -460,7 +469,7 @@ fn render_sparklines(frame: &mut Frame, area: Rect, state: &AppState) {
         .data(&mem_data)
         .max(100)
         .style(Style::default().fg(t.accent_secondary))
-        .bar_set(symbols::bar::NINE_LEVELS);
+        .bar_set(state.glyphs.bar_set.clone());
     frame.render_widget(mem_spark, halves[1]);
 }
 
@@ -497,7 +506,7 @@ fn render_gpu_panel(frame: &mut Frame, area: Rect, state: &AppState) {
         ])
         .split(inner);
 
-    let gpu_gauge = GradientGauge::new(gpu.utilization as f32, "GPU  ", t);
+    let gpu_gauge = GradientGauge::new(gpu.utilization as f32, "GPU  ", t, &state.glyphs);
     frame.render_widget(gpu_gauge, rows[0]);
 
     let vram_pct = gpu.memory_percent();
@@ -506,7 +515,7 @@ fn render_gpu_panel(frame: &mut Frame, area: Rect, state: &AppState) {
         crate::models::format_bytes(gpu.memory_used),
         crate::models::format_bytes(gpu.memory_total),
     );
-    let vram_gauge = GradientGauge::new(vram_pct, &vram_label, t);
+    let vram_gauge = GradientGauge::new(vram_pct, &vram_label, t, &state.glyphs);
     frame.render_widget(vram_gauge, rows[1]);
 
     if rows[2].height >= 1 {
@@ -683,9 +692,7 @@ fn render_disk_panel(frame: &mut Frame, area: Rect, state: &AppState) {
             let pct_color = t.usage_color(pct as f32);
 
             let bar_width = 16;
-            let filled = ((pct / 100.0) * bar_width as f64) as usize;
-            let empty = bar_width - filled;
-            let bar = format!("{}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty));
+            let bar = state.glyphs.bar(pct / 100.0, bar_width);
 
             Line::from(vec![
                 Span::styled(
@@ -819,7 +826,7 @@ fn render_ai_insight(frame: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let title = if state.ai_insight_loading {
-        let spinner = spinner_char(state.tick_count);
+        let spinner = state.glyphs.spinner_char(state.tick_count);
         format!(" {} AI Analysis ", spinner)
     } else {
         let age = state

@@ -7,7 +7,6 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    symbols,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Sparkline},
     Frame,
@@ -37,11 +36,17 @@ pub fn render_thermal_panel(frame: &mut Frame, area: Rect, state: &AppState) {
     if snap.cpu_package.is_some() || !snap.cpu_cores.is_empty() {
         lines.push(section_header("CPU ", t));
         if let Some(pkg) = snap.cpu_package {
-            lines.push(make_temp_line("  Package", pkg, 20, t));
+            lines.push(make_temp_line("  Package", pkg, 20, t, Some(&state.glyphs)));
         }
         for core in &snap.cpu_cores {
             let label = format!("  {}", core.name);
-            lines.push(make_temp_line(&label, core.value, 20, t));
+            lines.push(make_temp_line(
+                &label,
+                core.value,
+                20,
+                t,
+                Some(&state.glyphs),
+            ));
         }
     }
 
@@ -49,10 +54,16 @@ pub fn render_thermal_panel(frame: &mut Frame, area: Rect, state: &AppState) {
     if snap.gpu_temp.is_some() || snap.gpu_hotspot.is_some() {
         lines.push(section_header("GPU ", t));
         if let Some(temp) = snap.gpu_temp {
-            lines.push(make_temp_line("  Core", temp, 20, t));
+            lines.push(make_temp_line("  Core", temp, 20, t, Some(&state.glyphs)));
         }
         if let Some(temp) = snap.gpu_hotspot {
-            lines.push(make_temp_line("  Hot Spot", temp, 20, t));
+            lines.push(make_temp_line(
+                "  Hot Spot",
+                temp,
+                20,
+                t,
+                Some(&state.glyphs),
+            ));
         }
     }
 
@@ -61,7 +72,7 @@ pub fn render_thermal_panel(frame: &mut Frame, area: Rect, state: &AppState) {
         lines.push(section_header("Storage ", t));
         for s in snap.ssd_temps.iter().take(4) {
             let label = format!("  {}", s.name);
-            lines.push(make_temp_line(&label, s.value, 20, t));
+            lines.push(make_temp_line(&label, s.value, 20, t, Some(&state.glyphs)));
         }
     }
 
@@ -70,7 +81,7 @@ pub fn render_thermal_panel(frame: &mut Frame, area: Rect, state: &AppState) {
         lines.push(section_header("Board ", t));
         for s in snap.motherboard_temps.iter().take(4) {
             let label = format!("  {}", s.name);
-            lines.push(make_temp_line(&label, s.value, 20, t));
+            lines.push(make_temp_line(&label, s.value, 20, t, Some(&state.glyphs)));
         }
     }
 
@@ -177,11 +188,23 @@ pub fn render_thermal_tab(frame: &mut Frame, area: Rect, state: &AppState) {
 
         let mut lines = Vec::new();
         if let Some(pkg) = snap.cpu_package {
-            lines.push(make_temp_line("  Package", pkg, bar_width, t));
+            lines.push(make_temp_line(
+                "  Package",
+                pkg,
+                bar_width,
+                t,
+                Some(&state.glyphs),
+            ));
         }
         for core in &snap.cpu_cores {
             let label = format!("  {}", core.name);
-            lines.push(make_temp_line(&label, core.value, bar_width, t));
+            lines.push(make_temp_line(
+                &label,
+                core.value,
+                bar_width,
+                t,
+                Some(&state.glyphs),
+            ));
         }
         frame.render_widget(Paragraph::new(lines), inner);
     }
@@ -205,10 +228,22 @@ pub fn render_thermal_tab(frame: &mut Frame, area: Rect, state: &AppState) {
 
         let mut lines = Vec::new();
         if let Some(temp) = snap.gpu_temp {
-            lines.push(make_temp_line("  Core", temp, bar_width, t));
+            lines.push(make_temp_line(
+                "  Core",
+                temp,
+                bar_width,
+                t,
+                Some(&state.glyphs),
+            ));
         }
         if let Some(temp) = snap.gpu_hotspot {
-            lines.push(make_temp_line("  Hot Spot", temp, bar_width, t));
+            lines.push(make_temp_line(
+                "  Hot Spot",
+                temp,
+                bar_width,
+                t,
+                Some(&state.glyphs),
+            ));
         }
         frame.render_widget(Paragraph::new(lines), inner);
     }
@@ -229,7 +264,15 @@ pub fn render_thermal_tab(frame: &mut Frame, area: Rect, state: &AppState) {
         let lines: Vec<Line> = snap
             .ssd_temps
             .iter()
-            .map(|s| make_temp_line(&format!("  {}", s.name), s.value, bar_width, t))
+            .map(|s| {
+                make_temp_line(
+                    &format!("  {}", s.name),
+                    s.value,
+                    bar_width,
+                    t,
+                    Some(&state.glyphs),
+                )
+            })
             .collect();
         frame.render_widget(Paragraph::new(lines), inner);
     }
@@ -250,7 +293,15 @@ pub fn render_thermal_tab(frame: &mut Frame, area: Rect, state: &AppState) {
         let lines: Vec<Line> = snap
             .motherboard_temps
             .iter()
-            .map(|s| make_temp_line(&format!("  {}", s.name), s.value, bar_width, t))
+            .map(|s| {
+                make_temp_line(
+                    &format!("  {}", s.name),
+                    s.value,
+                    bar_width,
+                    t,
+                    Some(&state.glyphs),
+                )
+            })
             .collect();
         frame.render_widget(Paragraph::new(lines), inner);
     }
@@ -410,7 +461,7 @@ fn render_temp_sparkline(frame: &mut Frame, area: Rect, state: &AppState) {
         .data(&data)
         .max(1200) // 120°C * 10
         .style(Style::default().fg(temp_color(current)))
-        .bar_set(symbols::bar::NINE_LEVELS);
+        .bar_set(state.glyphs.bar_set.clone());
 
     frame.render_widget(spark, inner);
 }
@@ -617,9 +668,13 @@ fn make_temp_line<'a>(
     temp: f32,
     bar_width: usize,
     t: &crate::ui::theme::Theme,
+    g: Option<&crate::ui::glyphs::Glyphs>,
 ) -> Line<'a> {
     let color = temp_color(temp);
-    let bar = temp_bar(temp, bar_width);
+    let bar = match g {
+        Some(glyphs) => temp_bar_with_chars(temp, bar_width, glyphs.filled, glyphs.shade_light),
+        None => temp_bar(temp, bar_width),
+    };
     let flashing = temp >= 95.0;
 
     let mut style = Style::default().fg(color);
@@ -665,10 +720,19 @@ fn temp_color(temp: f32) -> Color {
 }
 
 /// Visual temperature bar using block characters.
+/// When `glyphs` is provided, uses the glyph set for the bar characters.
 fn temp_bar(temp: f32, max_width: usize) -> String {
+    temp_bar_with_chars(temp, max_width, '█', '░')
+}
+
+fn temp_bar_with_chars(temp: f32, max_width: usize, filled: char, empty_ch: char) -> String {
     // Scale: 0-120°C mapped to 0-max_width
     let fill = ((temp / 120.0) * max_width as f32).round() as usize;
     let fill = fill.min(max_width);
     let empty = max_width - fill;
-    format!("{}{}", "█".repeat(fill), "░".repeat(empty))
+    format!(
+        "{}{}",
+        filled.to_string().repeat(fill),
+        empty_ch.to_string().repeat(empty)
+    )
 }

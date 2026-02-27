@@ -10,7 +10,6 @@ use ratatui::{
 
 use crate::plugins::registry::PluginRegistry;
 use crate::ui::state::{AppState, Tab};
-use crate::utils::spinner_char;
 
 pub fn render_header_with_plugins(
     frame: &mut Frame,
@@ -30,9 +29,9 @@ pub fn render_header_with_plugins(
 
     // Logo
     let pulse = if state.tick_count % 2 == 0 {
-        "●"
+        state.glyphs.pulse_on
     } else {
-        "○"
+        state.glyphs.pulse_off
     };
     let logo = Paragraph::new(Line::from(vec![
         Span::styled(" ", Style::default()),
@@ -80,7 +79,10 @@ pub fn render_header_with_plugins(
     for (i, tab) in tabs.into_iter().enumerate() {
         tab_spans.push(tab);
         if i < tab_count - 1 {
-            tab_spans.push(Span::styled(" │ ", Style::default().fg(t.text_muted)));
+            tab_spans.push(Span::styled(
+                state.glyphs.separator,
+                Style::default().fg(t.text_muted),
+            ));
         }
     }
 
@@ -100,7 +102,7 @@ pub fn render_header_with_plugins(
     // AI loading indicator
     if state.ai_loading {
         tab_spans.push(Span::raw(" "));
-        let spinner = spinner_char(state.tick_count);
+        let spinner = state.glyphs.spinner_char(state.tick_count);
         tab_spans.push(Span::styled(
             format!(" {} AI ", spinner),
             Style::default()

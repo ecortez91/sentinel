@@ -110,7 +110,7 @@ mod tests {
         fn is_enabled(&self) -> bool {
             self.enabled
         }
-        fn render(&self, _: &mut Frame, _: Rect, _: &Theme) {}
+        fn render(&self, _: &mut Frame, _: Rect, _: &Theme, _: &crate::ui::glyphs::Glyphs) {}
     }
 
     #[test]

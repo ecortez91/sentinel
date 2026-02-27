@@ -35,6 +35,7 @@ use crate::thermal::shutdown::{ShutdownEvent, ShutdownManager};
 use crate::ui::CommandResult;
 use crate::monitor::{ContainerInfo, DockerMonitor, SystemCollector};
 use crate::store::EventStore;
+use crate::ui::glyphs::{GlyphMode, Glyphs};
 use crate::ui::{self, AppState, Tab};
 
 /// System prompt for auto-analysis (Dashboard insight card).
@@ -193,7 +194,17 @@ impl App {
             None
         };
 
-        let mut state = AppState::new(config.max_alerts, has_key, initial_theme, cjk_supported, shutdown_manager);
+        // Determine glyph mode: config override or auto-detect
+        let glyphs = match GlyphMode::from_config(&config.unicode_mode) {
+            Some(mode) => Glyphs::new(mode),
+            None => {
+                // Auto-detect: use ASCII on Windows Terminal, Unicode elsewhere
+                let mode = crate::utils::detect_unicode_support();
+                Glyphs::new(mode)
+            }
+        };
+
+        let mut state = AppState::new(config.max_alerts, has_key, initial_theme, glyphs, cjk_supported, shutdown_manager);
         if let Some(method) = &auth_display {
             state.ai_auth_method = method.clone();
         }

@@ -16,6 +16,7 @@ pub mod settings;
 use crossterm::event::KeyEvent;
 use ratatui::{layout::Rect, Frame};
 
+use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
 
 /// What the plugin wants the app to do after handling a key event.
@@ -55,10 +56,10 @@ pub trait Plugin: Send {
     }
 
     /// Render the plugin's tab content into the given area.
-    fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme);
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme, glyphs: &Glyphs);
 
     /// Render any overlays (detail popups, etc.) on top of content.
-    fn render_overlay(&self, _frame: &mut Frame, _area: Rect, _theme: &Theme) {}
+    fn render_overlay(&self, _frame: &mut Frame, _area: Rect, _theme: &Theme, _glyphs: &Glyphs) {}
 
     /// Called every tick to drain channels and update internal state.
     fn tick(&mut self) {}
@@ -103,7 +104,6 @@ pub trait Plugin: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::Color;
 
     /// Minimal plugin for testing the trait contract.
     struct TestPlugin {
@@ -120,7 +120,7 @@ mod tests {
         fn is_enabled(&self) -> bool {
             self.enabled
         }
-        fn render(&self, _frame: &mut Frame, _area: Rect, _theme: &Theme) {}
+        fn render(&self, _frame: &mut Frame, _area: Rect, _theme: &Theme, _glyphs: &Glyphs) {}
     }
 
     #[test]

@@ -9,10 +9,17 @@ use ratatui::{
 };
 
 use super::{SettingsCategory, SettingsPlugin};
+use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
 
 /// Render the settings tab.
-pub fn render_settings(frame: &mut Frame, area: Rect, state: &SettingsPlugin, theme: &Theme) {
+pub fn render_settings(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SettingsPlugin,
+    theme: &Theme,
+    glyphs: &Glyphs,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
@@ -37,13 +44,19 @@ pub fn render_settings(frame: &mut Frame, area: Rect, state: &SettingsPlugin, th
         .split(inner);
 
     // ── Category list ────────────────────────────────────────
-    render_categories(frame, columns[0], state, theme);
+    render_categories(frame, columns[0], state, theme, glyphs);
 
     // ── Settings items ───────────────────────────────────────
     render_items(frame, columns[1], state, theme);
 }
 
-fn render_categories(frame: &mut Frame, area: Rect, state: &SettingsPlugin, theme: &Theme) {
+fn render_categories(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SettingsPlugin,
+    theme: &Theme,
+    glyphs: &Glyphs,
+) {
     let cat_block = Block::default()
         .borders(Borders::RIGHT)
         .border_style(Style::default().fg(theme.border))
@@ -58,7 +71,11 @@ fn render_categories(frame: &mut Frame, area: Rect, state: &SettingsPlugin, them
     let mut lines = Vec::new();
     for (i, cat) in SettingsCategory::all().iter().enumerate() {
         let is_selected = i == state.selected_category;
-        let prefix = if is_selected { "\u{25B8} " } else { "  " };
+        let prefix = if is_selected {
+            format!("{} ", glyphs.pointer)
+        } else {
+            "  ".to_string()
+        };
         let style = if is_selected {
             Style::default()
                 .fg(theme.accent)

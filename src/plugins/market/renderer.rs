@@ -3,7 +3,6 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    symbols,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Sparkline, Wrap},
     Frame,
@@ -11,13 +10,20 @@ use ratatui::{
 
 use super::models::{format_change, format_large_number, format_price, ChartRange};
 use super::state::{MarketState, MarketView};
+use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
 
 /// Top-level render dispatcher.
-pub fn render_market(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme) {
+pub fn render_market(
+    frame: &mut Frame,
+    area: Rect,
+    state: &MarketState,
+    theme: &Theme,
+    glyphs: &Glyphs,
+) {
     match state.view {
-        MarketView::List => render_list(frame, area, state, theme),
-        MarketView::Detail => render_detail(frame, area, state, theme),
+        MarketView::List => render_list(frame, area, state, theme, glyphs),
+        MarketView::Detail => render_detail(frame, area, state, theme, glyphs),
     }
 }
 
@@ -27,13 +33,20 @@ pub fn render_market_overlay(
     area: Rect,
     state: &MarketState,
     theme: &Theme,
+    glyphs: &Glyphs,
 ) {
     if state.add_ticker_mode {
-        render_add_ticker_modal(frame, area, state, theme);
+        render_add_ticker_modal(frame, area, state, theme, glyphs);
     }
 }
 
-fn render_add_ticker_modal(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme) {
+fn render_add_ticker_modal(
+    frame: &mut Frame,
+    area: Rect,
+    state: &MarketState,
+    theme: &Theme,
+    glyphs: &Glyphs,
+) {
     // Center the modal
     let modal_width = 40;
     let modal_height = 5;
@@ -46,7 +59,9 @@ fn render_add_ticker_modal(frame: &mut Frame, area: Rect, state: &MarketState, t
         .border_style(Style::default().fg(theme.accent))
         .title(Span::styled(
             " Add Ticker ",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(modal_area);
@@ -58,8 +73,16 @@ fn render_add_ticker_modal(frame: &mut Frame, area: Rect, state: &MarketState, t
             Style::default().fg(theme.text_dim),
         )),
         Line::from(vec![
-            Span::styled(&state.add_ticker_text, Style::default().fg(theme.text_primary)),
-            Span::styled("█", Style::default().fg(theme.accent).add_modifier(Modifier::SLOW_BLINK)),
+            Span::styled(
+                &state.add_ticker_text,
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled(
+                glyphs.cursor,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
         ]),
         Line::from(Span::styled(
             "[Enter] Add  [Esc] Cancel",
@@ -72,7 +95,7 @@ fn render_add_ticker_modal(frame: &mut Frame, area: Rect, state: &MarketState, t
 
 // ── List View ────────────────────────────────────────────────────
 
-fn render_list(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme) {
+fn render_list(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme, glyphs: &Glyphs) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
@@ -107,12 +130,12 @@ fn render_list(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme
     let mut chunk_idx = 0;
 
     // ── Info bar ─────────────────────────────────────────────
-    render_info_bar(frame, chunks[chunk_idx], state, theme);
+    render_info_bar(frame, chunks[chunk_idx], state, theme, glyphs);
     chunk_idx += 1;
 
     // ── Search bar (conditional) ─────────────────────────────
     if has_search {
-        render_search_bar(frame, chunks[chunk_idx], state, theme);
+        render_search_bar(frame, chunks[chunk_idx], state, theme, glyphs);
         chunk_idx += 1;
     }
 
@@ -121,10 +144,16 @@ fn render_list(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme
     chunk_idx += 1;
 
     // ── Table rows ───────────────────────────────────────────
-    render_table_rows(frame, chunks[chunk_idx], state, theme);
+    render_table_rows(frame, chunks[chunk_idx], state, theme, glyphs);
 }
 
-fn render_info_bar(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme) {
+fn render_info_bar(
+    frame: &mut Frame,
+    area: Rect,
+    state: &MarketState,
+    theme: &Theme,
+    glyphs: &Glyphs,
+) {
     let mut spans = Vec::new();
 
     // Last updated
@@ -148,10 +177,7 @@ fn render_info_bar(frame: &mut Frame, area: Rect, state: &MarketState, theme: &T
         ));
     }
 
-    spans.push(Span::styled(
-        "│ ",
-        Style::default().fg(theme.text_muted),
-    ));
+    spans.push(Span::styled("│ ", Style::default().fg(theme.text_muted)));
 
     // Coin count
     let visible = state.visible_coins();
@@ -164,7 +190,10 @@ fn render_info_bar(frame: &mut Frame, area: Rect, state: &MarketState, theme: &T
     let fav_count = state.favorites.len();
     if fav_count > 0 {
         spans.push(Span::styled(
-            format!(" │ ★ {} favorites", fav_count),
+            format!(
+                "{}{} {} favorites",
+                glyphs.separator, glyphs.star, fav_count
+            ),
             Style::default().fg(Color::Yellow),
         ));
     }
@@ -182,23 +211,28 @@ fn render_info_bar(frame: &mut Frame, area: Rect, state: &MarketState, theme: &T
     // Sort indicator
     spans.push(Span::styled(
         format!(
-            " │ Sort: {} {}",
+            "{}Sort: {}{}",
+            glyphs.separator,
             state.sort_column.label(),
-            if state.sort_ascending { "↑" } else { "↓" }
+            if state.sort_ascending {
+                glyphs.sort_asc
+            } else {
+                glyphs.sort_desc
+            }
         ),
         Style::default().fg(theme.text_muted),
     ));
 
     // Add ticker hint
     spans.push(Span::styled(
-        " │ [+] add ticker  [d] remove",
+        format!("{}[+] add ticker  [d] remove", glyphs.separator),
         Style::default().fg(theme.text_muted),
     ));
 
     // Error
     if let Some(ref err) = state.error {
         spans.push(Span::styled(
-            format!(" │ Error: {}", truncate(err, 30)),
+            format!("{}Error: {}", glyphs.separator, truncate(err, 30)),
             Style::default().fg(theme.danger),
         ));
     }
@@ -206,7 +240,13 @@ fn render_info_bar(frame: &mut Frame, area: Rect, state: &MarketState, theme: &T
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_search_bar(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme) {
+fn render_search_bar(
+    frame: &mut Frame,
+    area: Rect,
+    state: &MarketState,
+    theme: &Theme,
+    glyphs: &Glyphs,
+) {
     let spans = vec![
         Span::styled(
             " /",
@@ -216,7 +256,7 @@ fn render_search_bar(frame: &mut Frame, area: Rect, state: &MarketState, theme: 
         ),
         Span::styled(&state.search_text, Style::default().fg(theme.text_primary)),
         Span::styled(
-            "█",
+            glyphs.cursor,
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::SLOW_BLINK),
@@ -240,7 +280,13 @@ fn render_column_headers(frame: &mut Frame, area: Rect, _state: &MarketState, th
     frame.render_widget(Paragraph::new(header_line), area);
 }
 
-fn render_table_rows(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme) {
+fn render_table_rows(
+    frame: &mut Frame,
+    area: Rect,
+    state: &MarketState,
+    theme: &Theme,
+    glyphs: &Glyphs,
+) {
     let visible = state.visible_coins();
     let max_rows = area.height as usize;
 
@@ -279,7 +325,7 @@ fn render_table_rows(frame: &mut Frame, area: Rect, state: &MarketState, theme: 
     for (i, coin) in visible.iter().enumerate().skip(scroll).take(max_rows) {
         let is_selected = i == state.selected_index;
 
-        let fav = if coin.is_favorite { "★" } else { " " };
+        let fav = if coin.is_favorite { glyphs.star } else { " " };
         let rank_str = format!("{}{:<3}", fav, coin.rank);
         let symbol = &coin.name; // Display base asset (BTC, ETH)
         let price = format_price(coin.current_price);
@@ -296,8 +342,17 @@ fn render_table_rows(frame: &mut Frame, area: Rect, state: &MarketState, theme: 
         };
 
         let spans = vec![
-            Span::styled(format!(" {:<4} {:<10} {:>14} ", rank_str, symbol, price), base_style),
-            styled_change_span(&change_24h, coin.price_change_pct_24h, is_selected, theme),
+            Span::styled(
+                format!(" {:<4} {:<10} {:>14} ", rank_str, symbol, price),
+                base_style,
+            ),
+            styled_change_span(
+                &change_24h,
+                coin.price_change_pct_24h,
+                is_selected,
+                theme,
+                glyphs,
+            ),
             Span::styled(format!(" {:>14} {:>12} ", vol, trades), base_style),
         ];
 
@@ -308,7 +363,13 @@ fn render_table_rows(frame: &mut Frame, area: Rect, state: &MarketState, theme: 
 }
 
 /// Create a colored span for a percentage change.
-fn styled_change_span(text: &str, pct: f64, selected: bool, theme: &Theme) -> Span<'static> {
+fn styled_change_span(
+    text: &str,
+    pct: f64,
+    selected: bool,
+    theme: &Theme,
+    glyphs: &Glyphs,
+) -> Span<'static> {
     let color = if pct > 0.5 {
         theme.success
     } else if pct < -0.5 {
@@ -318,9 +379,9 @@ fn styled_change_span(text: &str, pct: f64, selected: bool, theme: &Theme) -> Sp
     };
 
     let arrow = if pct > 0.5 {
-        "▲"
+        glyphs.price_up
     } else if pct < -0.5 {
-        "▼"
+        glyphs.price_down
     } else {
         " "
     };
@@ -347,14 +408,24 @@ fn format_trades(n: u64) -> String {
 
 // ── Detail View ──────────────────────────────────────────────────
 
-fn render_detail(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme) {
+fn render_detail(
+    frame: &mut Frame,
+    area: Rect,
+    state: &MarketState,
+    theme: &Theme,
+    glyphs: &Glyphs,
+) {
     let coin = match state.detail_coin {
         Some(ref c) => c,
         None => return,
     };
 
-    let fav_icon = if coin.is_favorite { " ★" } else { "" };
-    let title = format!(" {} ({}) {}", coin.name, coin.symbol, fav_icon);
+    let fav_icon = if coin.is_favorite {
+        format!(" {}", glyphs.star)
+    } else {
+        String::new()
+    };
+    let title = format!(" {} ({}){}", coin.name, coin.symbol, fav_icon);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -380,7 +451,7 @@ fn render_detail(frame: &mut Frame, area: Rect, state: &MarketState, theme: &The
         .split(inner);
 
     // Left: chart + range selector
-    render_chart_column(frame, columns[0], state, coin, theme);
+    render_chart_column(frame, columns[0], state, coin, theme, glyphs);
 
     // Right: stats + AI
     render_stats_column(frame, columns[1], state, coin, theme);
@@ -392,6 +463,7 @@ fn render_chart_column(
     state: &MarketState,
     _coin: &super::models::CoinMarket,
     theme: &Theme,
+    glyphs: &Glyphs,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -426,7 +498,7 @@ fn render_chart_column(
             chart_inner,
         );
     } else if let Some(ref history) = state.price_history {
-        render_price_chart(frame, chart_inner, history, theme);
+        render_price_chart(frame, chart_inner, history, theme, glyphs);
     } else {
         frame.render_widget(
             Paragraph::new(Span::styled(
@@ -461,6 +533,7 @@ fn render_price_chart(
     area: Rect,
     history: &[super::models::PricePoint],
     theme: &Theme,
+    glyphs: &Glyphs,
 ) {
     if history.is_empty() || area.height < 2 {
         return;
@@ -517,7 +590,7 @@ fn render_price_chart(
         .data(&sampled)
         .max(1000)
         .style(Style::default().fg(color))
-        .bar_set(symbols::bar::NINE_LEVELS);
+        .bar_set(glyphs.bar_set.clone());
 
     frame.render_widget(sparkline, price_label_area[1]);
 

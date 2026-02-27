@@ -34,7 +34,8 @@ pub fn render_status_bar_with_plugins(
     };
     let dim =
         |text: &str| -> Span { Span::styled(text.to_string(), Style::default().fg(t.text_dim)) };
-    let sep = || -> Span { Span::styled(" \u{2502} ", Style::default().fg(t.text_muted)) };
+    let g = &state.glyphs;
+    let sep = || -> Span { Span::styled(g.separator, Style::default().fg(t.text_muted)) };
 
     let mut spans = vec![Span::styled(" ", Style::default())];
 
@@ -79,7 +80,7 @@ pub fn render_status_bar_with_plugins(
             }
         }
         Tab::Alerts => {
-            spans.push(badge("\u{2191}\u{2193}", t.accent));
+            spans.push(badge(g.nav_up_down, t.accent));
             spans.push(dim(" Scroll "));
         }
         Tab::AskAi => {

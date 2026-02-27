@@ -50,11 +50,12 @@ pub fn render_processes(frame: &mut Frame, area: Rect, state: &AppState) {
     );
     frame.render_widget(filter_bar, chunks[0]);
 
+    let g = &state.glyphs;
     let sort_indicator = |col: SortColumn| -> &str {
         if col == state.sort_column {
             match state.sort_direction {
-                SortDirection::Asc => " ▲",
-                SortDirection::Desc => " ▼",
+                SortDirection::Asc => g.sort_asc,
+                SortDirection::Desc => g.sort_desc,
             }
         } else {
             ""

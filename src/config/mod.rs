@@ -33,6 +33,8 @@ pub struct Config {
     pub theme: String,
     /// UI language (en, ja, es, de, zh)
     pub lang: String,
+    /// Unicode rendering mode: "auto", "unicode", or "ascii"
+    pub unicode_mode: String,
     /// Thermal monitoring configuration
     pub thermal: ThermalConfig,
     /// Email notification configuration
@@ -162,6 +164,7 @@ impl Default for Config {
             auto_analysis_interval_secs: DEFAULT_AUTO_ANALYSIS_SECS,
             theme: "default".to_string(),
             lang: "en".to_string(),
+            unicode_mode: "auto".to_string(),
             thermal: ThermalConfig::default(),
             notifications: NotificationConfig::default(),
             market: MarketConfig::default(),
@@ -188,6 +191,7 @@ struct FileConfig {
     auto_analysis_interval_secs: Option<u64>,
     theme: Option<String>,
     lang: Option<String>,
+    unicode_mode: Option<String>,
     thermal: Option<FileThermalConfig>,
     notifications: Option<FileNotificationConfig>,
     market: Option<FileMarketConfig>,
@@ -295,6 +299,11 @@ impl Config {
         if let Some(v) = file_config.lang {
             if !v.is_empty() {
                 config.lang = v;
+            }
+        }
+        if let Some(v) = file_config.unicode_mode {
+            if !v.is_empty() {
+                config.unicode_mode = v;
             }
         }
 

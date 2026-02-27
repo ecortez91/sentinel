@@ -16,6 +16,7 @@ use ratatui::{layout::Rect, Frame};
 use tokio::sync::{mpsc, watch};
 
 use crate::plugins::{Plugin, PluginAction};
+use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
 
 use client::BinanceClient;
@@ -321,12 +322,12 @@ impl Plugin for MarketPlugin {
         }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        renderer::render_market(frame, area, &self.state, theme);
+    fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme, glyphs: &Glyphs) {
+        renderer::render_market(frame, area, &self.state, theme, glyphs);
     }
 
-    fn render_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        renderer::render_market_overlay(frame, area, &self.state, theme);
+    fn render_overlay(&self, frame: &mut Frame, area: Rect, theme: &Theme, glyphs: &Glyphs) {
+        renderer::render_market_overlay(frame, area, &self.state, theme, glyphs);
     }
 
     fn status_bar_hints(&self) -> Vec<(&str, &str)> {

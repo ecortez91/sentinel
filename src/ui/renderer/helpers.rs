@@ -63,17 +63,34 @@ pub fn status_badge<'a>(status: &crate::models::ProcessStatus, t: &Theme) -> Spa
     }
 }
 
+use crate::ui::glyphs::Glyphs;
+
 /// Render a vertical scrollbar on the right side of `area`.
 ///
 /// Only renders if `total > visible_height`.
 pub fn render_scrollbar(frame: &mut Frame, area: Rect, total: usize, position: usize) {
+    render_scrollbar_with_glyphs(frame, area, total, position, None);
+}
+
+/// Render a vertical scrollbar with glyph-aware arrow symbols.
+pub fn render_scrollbar_with_glyphs(
+    frame: &mut Frame,
+    area: Rect,
+    total: usize,
+    position: usize,
+    glyphs: Option<&Glyphs>,
+) {
     let visible_height = area.height as usize;
     if total <= visible_height {
         return;
     }
+    let (up, down) = match glyphs {
+        Some(g) => (g.arrow_up, g.arrow_down),
+        None => ("▲", "▼"),
+    };
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .begin_symbol(Some("▲"))
-        .end_symbol(Some("▼"));
+        .begin_symbol(Some(up))
+        .end_symbol(Some(down));
     let mut scrollbar_state = ScrollbarState::new(total).position(position);
     frame.render_stateful_widget(
         scrollbar,
@@ -87,13 +104,28 @@ pub fn render_scrollbar(frame: &mut Frame, area: Rect, total: usize, position: u
 
 /// Render a vertical scrollbar inside a bordered area (1px vertical margin).
 pub fn render_scrollbar_bordered(frame: &mut Frame, area: Rect, total: usize, position: usize) {
+    render_scrollbar_bordered_with_glyphs(frame, area, total, position, None);
+}
+
+/// Render a bordered vertical scrollbar with glyph-aware arrow symbols.
+pub fn render_scrollbar_bordered_with_glyphs(
+    frame: &mut Frame,
+    area: Rect,
+    total: usize,
+    position: usize,
+    glyphs: Option<&Glyphs>,
+) {
     let visible_height = area.height.saturating_sub(2) as usize;
     if total <= visible_height {
         return;
     }
+    let (up, down) = match glyphs {
+        Some(g) => (g.arrow_up, g.arrow_down),
+        None => ("▲", "▼"),
+    };
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .begin_symbol(Some("▲"))
-        .end_symbol(Some("▼"));
+        .begin_symbol(Some(up))
+        .end_symbol(Some(down));
     let mut scrollbar_state = ScrollbarState::new(total).position(position);
     frame.render_stateful_widget(
         scrollbar,

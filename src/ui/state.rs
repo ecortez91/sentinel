@@ -9,6 +9,7 @@ use crate::monitor::ContainerInfo;
 use crate::thermal::shutdown::ShutdownManager;
 use crate::thermal::ThermalSnapshot;
 
+use super::glyphs::Glyphs;
 use super::theme::Theme;
 
 /// Result from a command palette execution — holds rendered text + any
@@ -315,6 +316,9 @@ pub struct AppState {
     // ── Theme ────────────────────────────────────────────────
     pub theme: Theme,
 
+    // ── Glyph set (Unicode vs ASCII) ─────────────────────────
+    pub glyphs: Glyphs,
+
     // ── Signal picker popup ──────────────────────────────────
     pub show_signal_picker: bool,
     pub signal_picker_selected: usize,
@@ -389,6 +393,7 @@ impl AppState {
         max_alerts: usize,
         has_api_key: bool,
         theme: Theme,
+        glyphs: Glyphs,
         cjk_supported: bool,
         shutdown_manager: ShutdownManager,
     ) -> Self {
@@ -428,6 +433,8 @@ impl AppState {
             ai_insight_expanded: false,
             // Theme
             theme,
+            // Glyphs
+            glyphs,
             // Signal picker
             show_signal_picker: false,
             signal_picker_selected: DEFAULT_SIGNAL_INDEX, // SIGTERM
@@ -904,12 +911,21 @@ impl AppState {
 
         let mut result: Vec<(String, &ProcessInfo)> = Vec::with_capacity(processes.len());
 
+        let tree_branch = self.glyphs.tree_branch;
+        let tree_last = self.glyphs.tree_last;
+        let tree_pipe = self.glyphs.tree_pipe;
+        let tree_space = self.glyphs.tree_space;
+
         fn walk<'a>(
             pid: u32,
             prefix: &str,
             children_map: &HashMap<u32, Vec<&'a ProcessInfo>>,
             result: &mut Vec<(String, &'a ProcessInfo)>,
             depth: usize,
+            branch: &str,
+            last: &str,
+            pipe: &str,
+            space: &str,
         ) {
             if depth > MAX_TREE_DEPTH {
                 return; // Guard against cycles
@@ -921,9 +937,9 @@ impl AppState {
                     let connector = if depth == 0 {
                         String::new()
                     } else if is_last_child {
-                        format!("{}└── ", prefix)
+                        format!("{}{}", prefix, last)
                     } else {
-                        format!("{}├── ", prefix)
+                        format!("{}{}", prefix, branch)
                     };
 
                     result.push((connector, child));
@@ -931,12 +947,22 @@ impl AppState {
                     let new_prefix = if depth == 0 {
                         String::new()
                     } else if is_last_child {
-                        format!("{}    ", prefix)
+                        format!("{}{}", prefix, space)
                     } else {
-                        format!("{}│   ", prefix)
+                        format!("{}{}", prefix, pipe)
                     };
 
-                    walk(child.pid, &new_prefix, children_map, result, depth + 1);
+                    walk(
+                        child.pid,
+                        &new_prefix,
+                        children_map,
+                        result,
+                        depth + 1,
+                        branch,
+                        last,
+                        pipe,
+                        space,
+                    );
                 }
             }
         }
@@ -945,7 +971,17 @@ impl AppState {
         for root in &roots {
             result.push((String::new(), root));
             let prefix = String::new();
-            walk(root.pid, &prefix, &children_map, &mut result, 1);
+            walk(
+                root.pid,
+                &prefix,
+                &children_map,
+                &mut result,
+                1,
+                tree_branch,
+                tree_last,
+                tree_pipe,
+                tree_space,
+            );
         }
 
         result
@@ -1049,7 +1085,15 @@ mod tests {
     fn make_state() -> AppState {
         rust_i18n::set_locale("en");
         let shutdown_mgr = ShutdownManager::new(false, 100.0, 95.0, 30, 30, 0, 24);
-        AppState::new(100, false, Theme::default_dark(), true, shutdown_mgr)
+        let glyphs = Glyphs::new(crate::ui::glyphs::GlyphMode::Unicode);
+        AppState::new(
+            100,
+            false,
+            Theme::default_dark(),
+            glyphs,
+            true,
+            shutdown_mgr,
+        )
     }
 
     fn make_process(pid: u32, name: &str, cpu: f32, mem_bytes: u64) -> ProcessInfo {
@@ -1740,7 +1784,15 @@ mod tests {
     #[test]
     fn cycle_lang_skips_cjk_when_unsupported() {
         let shutdown_mgr = ShutdownManager::new(false, 100.0, 95.0, 30, 30, 0, 24);
-        let mut s = AppState::new(100, false, Theme::default_dark(), false, shutdown_mgr);
+        let glyphs = Glyphs::new(crate::ui::glyphs::GlyphMode::Unicode);
+        let mut s = AppState::new(
+            100,
+            false,
+            Theme::default_dark(),
+            glyphs,
+            false,
+            shutdown_mgr,
+        );
         s.current_lang = "en".to_string();
         // With cjk_supported=false, should skip "ja" and "zh"
         // LANGUAGES = ["en", "ja", "es", "de", "zh"]
@@ -1756,7 +1808,15 @@ mod tests {
     #[test]
     fn cycle_lang_includes_cjk_when_supported() {
         let shutdown_mgr = ShutdownManager::new(false, 100.0, 95.0, 30, 30, 0, 24);
-        let mut s = AppState::new(100, false, Theme::default_dark(), true, shutdown_mgr);
+        let glyphs = Glyphs::new(crate::ui::glyphs::GlyphMode::Unicode);
+        let mut s = AppState::new(
+            100,
+            false,
+            Theme::default_dark(),
+            glyphs,
+            true,
+            shutdown_mgr,
+        );
         s.current_lang = "en".to_string();
         s.cycle_lang();
         assert_eq!(s.current_lang, "ja"); // CJK included
