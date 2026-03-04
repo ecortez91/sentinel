@@ -45,6 +45,10 @@ pub struct MarketPlugin {
     enabled: bool,
     /// Callback to save watchlist changes.
     on_watchlist_change: Option<Box<dyn Fn(&[String]) + Send + Sync>>,
+    /// Actions deferred from `execute_command` for the app to drain
+    /// via [`Plugin::drain_pending_actions`].
+    #[allow(dead_code)]
+    pending_actions: Vec<PluginAction>,
 }
 
 /// Result from a background market data poll.
@@ -83,6 +87,7 @@ impl MarketPlugin {
             poll_interval_secs,
             enabled,
             on_watchlist_change: None,
+            pending_actions: Vec::new(),
         }
     }
 
@@ -390,6 +395,10 @@ impl Plugin for MarketPlugin {
         Some(&self.state.favorites)
     }
 
+    fn drain_pending_actions(&mut self) -> Vec<PluginAction> {
+        std::mem::take(&mut self.pending_actions)
+    }
+
     fn commands(&self) -> Vec<(&str, &str)> {
         vec![
             ("market", "Show market overview"),
@@ -407,6 +416,9 @@ impl Plugin for MarketPlugin {
                     if self.state.add_ticker(&ticker) {
                         self.fetch_single_ticker(&ticker);
                         self.notify_watchlist_change();
+                        self.pending_actions.push(
+                            PluginAction::SaveWatchlist(self.state.watchlist.clone()),
+                        );
                         Some(format!("Added {} to watchlist", ticker))
                     } else {
                         Some(format!("{} is already in watchlist", ticker))
@@ -417,6 +429,9 @@ impl Plugin for MarketPlugin {
                         self.state.watchlist.remove(pos);
                         self.state.coins.retain(|c| c.symbol != ticker);
                         self.notify_watchlist_change();
+                        self.pending_actions.push(
+                            PluginAction::SaveWatchlist(self.state.watchlist.clone()),
+                        );
                         Some(format!("Removed {} from watchlist", ticker))
                     } else {
                         Some(format!("{} not in watchlist", ticker))
@@ -524,10 +539,11 @@ impl MarketPlugin {
                 PluginAction::Consumed
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {
-                // Remove selected ticker
+                // Remove selected ticker and persist the change
                 if let Some(removed) = self.state.remove_selected_ticker() {
                     self.notify_watchlist_change();
                     self.state.error = Some(format!("Removed {}", removed));
+                    return PluginAction::SaveWatchlist(self.state.watchlist.clone());
                 }
                 PluginAction::Consumed
             }
@@ -665,18 +681,20 @@ impl MarketPlugin {
             }
             KeyCode::Enter => {
                 let ticker = self.state.add_ticker_text.trim().to_uppercase();
+                let mut action = PluginAction::Consumed;
                 if !ticker.is_empty() {
                     if self.state.add_ticker(&ticker) {
                         self.fetch_single_ticker(&ticker);
                         self.notify_watchlist_change();
                         self.state.error = None;
+                        action = PluginAction::SaveWatchlist(self.state.watchlist.clone());
                     } else {
                         self.state.error = Some(format!("{} already in watchlist", ticker));
                     }
                 }
                 self.state.add_ticker_mode = false;
                 self.state.add_ticker_text.clear();
-                PluginAction::Consumed
+                action
             }
             KeyCode::Backspace => {
                 self.state.add_ticker_text.pop();
@@ -700,5 +718,204 @@ impl MarketPlugin {
         if let Some(ref coin) = self.state.detail_coin {
             self.fetch_chart(&coin.symbol.clone(), &self.state.chart_range.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn make_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn make_plugin(tickers: Vec<String>) -> MarketPlugin {
+        MarketPlugin::new(true, 30, tickers, HashSet::new())
+    }
+
+    /// Helper: run a closure inside a tokio runtime so `tokio::spawn` works.
+    fn with_runtime<F: FnOnce()>(f: F) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async { f() });
+    }
+
+    /// Adding a ticker via the add-ticker modal returns SaveWatchlist.
+    #[test]
+    fn add_ticker_returns_save_watchlist() {
+        with_runtime(|| {
+            let mut plugin = make_plugin(vec!["BTCUSDT".into()]);
+            plugin.state.add_ticker_mode = true;
+            plugin.state.add_ticker_text = "ETHUSDT".to_string();
+
+            let action = plugin.handle_key(make_key(KeyCode::Enter));
+            match action {
+                PluginAction::SaveWatchlist(tickers) => {
+                    assert!(tickers.contains(&"BTCUSDT".to_string()));
+                    assert!(tickers.contains(&"ETHUSDT".to_string()));
+                    assert_eq!(tickers.len(), 2);
+                }
+                other => panic!("Expected SaveWatchlist, got {:?}", other),
+            }
+        });
+    }
+
+    /// Adding a duplicate ticker does NOT produce SaveWatchlist.
+    #[test]
+    fn duplicate_add_does_not_save() {
+        with_runtime(|| {
+            let mut plugin = make_plugin(vec!["BTCUSDT".into()]);
+            plugin.state.add_ticker_mode = true;
+            plugin.state.add_ticker_text = "BTCUSDT".to_string();
+
+            let action = plugin.handle_key(make_key(KeyCode::Enter));
+            assert!(
+                matches!(action, PluginAction::Consumed),
+                "Duplicate add should return Consumed, got {:?}",
+                action
+            );
+        });
+    }
+
+    /// Cancelling add-ticker mode (Esc) does not produce SaveWatchlist.
+    #[test]
+    fn cancel_add_does_not_save() {
+        let mut plugin = make_plugin(vec!["BTCUSDT".into()]);
+        plugin.state.add_ticker_mode = true;
+        plugin.state.add_ticker_text = "ETHUSDT".to_string();
+
+        let action = plugin.handle_key(make_key(KeyCode::Esc));
+        assert!(
+            matches!(action, PluginAction::Consumed),
+            "Esc should return Consumed, got {:?}",
+            action
+        );
+        // Watchlist unchanged
+        assert_eq!(plugin.state.watchlist, vec!["BTCUSDT".to_string()]);
+    }
+
+    /// Removing a ticker produces SaveWatchlist with the ticker gone.
+    #[test]
+    fn remove_ticker_returns_save_watchlist() {
+        let mut plugin = make_plugin(vec!["BTCUSDT".into(), "ETHUSDT".into()]);
+
+        // Populate coins so remove_selected_ticker can find something
+        plugin.state.coins = vec![
+            models::CoinMarket {
+                symbol: "BTCUSDT".into(),
+                name: "BTC".into(),
+                current_price: 50000.0,
+                price_change_pct_24h: 1.0,
+                price_change_24h: 500.0,
+                high_24h: 51000.0,
+                low_24h: 49000.0,
+                open_24h: 49500.0,
+                total_volume: 1_000_000.0,
+                quote_volume: 50_000_000_000.0,
+                weighted_avg_price: 50000.0,
+                trade_count: 100_000,
+                rank: 1,
+                is_favorite: false,
+            },
+            models::CoinMarket {
+                symbol: "ETHUSDT".into(),
+                name: "ETH".into(),
+                current_price: 3000.0,
+                price_change_pct_24h: -0.5,
+                price_change_24h: -15.0,
+                high_24h: 3100.0,
+                low_24h: 2900.0,
+                open_24h: 3015.0,
+                total_volume: 500_000.0,
+                quote_volume: 1_500_000_000.0,
+                weighted_avg_price: 3000.0,
+                trade_count: 50_000,
+                rank: 2,
+                is_favorite: false,
+            },
+        ];
+
+        // Select ETHUSDT (index 1) and press 'd'
+        plugin.state.selected_index = 1;
+        let action = plugin.handle_key(make_key(KeyCode::Char('d')));
+
+        match action {
+            PluginAction::SaveWatchlist(tickers) => {
+                assert_eq!(tickers, vec!["BTCUSDT".to_string()]);
+                assert!(!tickers.contains(&"ETHUSDT".to_string()));
+            }
+            other => panic!("Expected SaveWatchlist, got {:?}", other),
+        }
+    }
+
+    /// Command palette `market add` queues a pending SaveWatchlist action.
+    #[test]
+    fn command_add_queues_pending_action() {
+        with_runtime(|| {
+            let mut plugin = make_plugin(vec!["BTCUSDT".into()]);
+
+            let result = plugin.execute_command("market", "add DOGEUSDT");
+            assert!(result.is_some());
+            assert!(result.unwrap().contains("Added DOGEUSDT"));
+
+            let actions = plugin.drain_pending_actions();
+            assert_eq!(actions.len(), 1);
+            match &actions[0] {
+                PluginAction::SaveWatchlist(tickers) => {
+                    assert!(tickers.contains(&"DOGEUSDT".to_string()));
+                    assert!(tickers.contains(&"BTCUSDT".to_string()));
+                }
+                other => panic!("Expected SaveWatchlist, got {:?}", other),
+            }
+        });
+    }
+
+    /// Command palette `market remove` queues a pending SaveWatchlist action.
+    #[test]
+    fn command_remove_queues_pending_action() {
+        let mut plugin = make_plugin(vec!["BTCUSDT".into(), "ETHUSDT".into()]);
+
+        let result = plugin.execute_command("market", "remove ETHUSDT");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("Removed ETHUSDT"));
+
+        let actions = plugin.drain_pending_actions();
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            PluginAction::SaveWatchlist(tickers) => {
+                assert_eq!(tickers.len(), 1);
+                assert_eq!(tickers[0], "BTCUSDT");
+            }
+            other => panic!("Expected SaveWatchlist, got {:?}", other),
+        }
+    }
+
+    /// Command palette with duplicate add does NOT queue SaveWatchlist.
+    #[test]
+    fn command_duplicate_add_no_pending_action() {
+        with_runtime(|| {
+            let mut plugin = make_plugin(vec!["BTCUSDT".into()]);
+
+            let result = plugin.execute_command("market", "add BTCUSDT");
+            assert!(result.is_some());
+            assert!(result.unwrap().contains("already in watchlist"));
+
+            let actions = plugin.drain_pending_actions();
+            assert!(actions.is_empty());
+        });
+    }
+
+    /// drain_pending_actions clears the queue after draining.
+    #[test]
+    fn drain_pending_actions_clears_queue() {
+        with_runtime(|| {
+            let mut plugin = make_plugin(vec!["BTCUSDT".into()]);
+
+            plugin.execute_command("market", "add DOGEUSDT");
+            assert_eq!(plugin.drain_pending_actions().len(), 1);
+
+            // Second drain should be empty
+            assert!(plugin.drain_pending_actions().is_empty());
+        });
     }
 }

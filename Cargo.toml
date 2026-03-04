@@ -69,6 +69,9 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1", "to
 # Environment file loading (.env for SMTP credentials)
 dotenvy = "0.15"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 opt-level = 3
 lto = true

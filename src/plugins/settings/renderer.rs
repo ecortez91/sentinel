@@ -1,4 +1,10 @@
 //! Settings plugin renderer.
+//!
+//! Renders the settings tab with inline edit affordances:
+//! - Toggle items show `[ON]`/`[OFF]`
+//! - Cycle items show `[< value >]`
+//! - Number items show `[value]` and, when editing, `[_buffer|]`
+//! - ReadOnly items show `[value]` with a config.toml hint
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -8,7 +14,7 @@ use ratatui::{
     Frame,
 };
 
-use super::{SettingsCategory, SettingsPlugin};
+use super::{SettingKind, SettingsCategory, SettingsPlugin};
 use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
 
@@ -43,10 +49,10 @@ pub fn render_settings(
         .constraints([Constraint::Length(18), Constraint::Min(30)])
         .split(inner);
 
-    // ── Category list ────────────────────────────────────────
+    // -- Category list --
     render_categories(frame, columns[0], state, theme, glyphs);
 
-    // ── Settings items ───────────────────────────────────────
+    // -- Settings items --
     render_items(frame, columns[1], state, theme);
 }
 
@@ -111,6 +117,7 @@ fn render_items(frame: &mut Frame, area: Rect, state: &SettingsPlugin, theme: &T
     let mut lines = Vec::new();
     for (i, item) in items.iter().enumerate() {
         let is_selected = i == state.selected_item;
+        let is_editing = is_selected && state.editing;
 
         let style = if is_selected {
             Style::default()
@@ -137,9 +144,43 @@ fn render_items(frame: &mut Frame, area: Rect, state: &SettingsPlugin, theme: &T
             Style::default().fg(theme.text_muted)
         };
 
+        // Format the value display based on kind and edit state
+        let value_display = if is_editing {
+            format!("[{}|]", state.edit_buffer)
+        } else {
+            format_value_for_kind(&item.value, &item.kind)
+        };
+
+        // Build the hint span shown after the value
+        let hint = if is_editing {
+            " Enter=save Esc=cancel"
+        } else if is_selected {
+            match &item.kind {
+                SettingKind::Toggle => " Enter=toggle",
+                SettingKind::Cycle(_) => " Enter=cycle",
+                SettingKind::Number { .. } => " Enter=edit",
+                SettingKind::Text { .. } => " Enter=edit",
+                SettingKind::ReadOnly => " (config.toml)",
+            }
+        } else {
+            ""
+        };
+
+        let hint_style = if is_selected {
+            Style::default()
+                .bg(theme.table_row_selected_bg)
+                .fg(theme.text_muted)
+                .add_modifier(Modifier::ITALIC)
+        } else {
+            Style::default()
+                .fg(theme.text_muted)
+                .add_modifier(Modifier::ITALIC)
+        };
+
         lines.push(Line::from(vec![
             Span::styled(format!("  {:.<20} ", item.label), style),
-            Span::styled(format!("[{}]", item.value), value_style),
+            Span::styled(value_display, value_style),
+            Span::styled(hint, hint_style),
         ]));
         lines.push(Line::from(Span::styled(
             format!("    {}", item.description),
@@ -151,11 +192,36 @@ fn render_items(frame: &mut Frame, area: Rect, state: &SettingsPlugin, theme: &T
     // Footer hint
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "  Edit config.toml to change values. Restart to apply.",
+        "  Enter: Edit  |  Advanced settings: ~/.config/sentinel/config.toml",
         Style::default()
             .fg(theme.text_muted)
             .add_modifier(Modifier::ITALIC),
     )));
 
     frame.render_widget(Paragraph::new(lines), items_inner);
+}
+
+/// Format a setting value for display based on its kind.
+fn format_value_for_kind(value: &str, kind: &SettingKind) -> String {
+    match kind {
+        SettingKind::Toggle => {
+            if value == "true" {
+                "[ON]".to_string()
+            } else {
+                "[OFF]".to_string()
+            }
+        }
+        SettingKind::Cycle(_) => format!("[< {} >]", value),
+        SettingKind::Number { suffix, .. } => format!("[{}{}]", value, suffix),
+        SettingKind::Text { masked, .. } => {
+            if *masked && !value.is_empty() {
+                format!("[{}]", "*".repeat(value.len().min(16)))
+            } else if value.is_empty() {
+                "[<empty>]".to_string()
+            } else {
+                format!("[{}]", value)
+            }
+        }
+        SettingKind::ReadOnly => format!("[{}]", value),
+    }
 }

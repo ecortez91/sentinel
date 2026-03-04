@@ -20,6 +20,9 @@ use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
 
 /// What the plugin wants the app to do after handling a key event.
+///
+/// Follows the Command pattern: plugins emit actions, the app interprets them.
+/// This keeps plugins decoupled from app internals (Dependency Inversion).
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum PluginAction {
@@ -31,6 +34,11 @@ pub enum PluginAction {
     RequestAiAnalysis(String),
     /// Show a status bar message.
     SetStatus(String),
+    /// Persist the updated market watchlist to config.
+    SaveWatchlist(Vec<String>),
+    /// The plugin changed configuration; the app should hot-reload and persist.
+    /// Boxed to avoid bloating the enum (Config is large).
+    ConfigChanged(Box<crate::config::Config>),
 }
 
 /// Core plugin trait. Each plugin owns a tab, background polling,
@@ -89,6 +97,15 @@ pub trait Plugin: Send {
     /// Default: empty set (plugin has no favorites to persist).
     fn favorites(&self) -> Option<&std::collections::HashSet<String>> {
         None
+    }
+
+    /// Drain actions queued during non-key operations (e.g., `execute_command`).
+    ///
+    /// The app calls this after command execution to pick up deferred actions
+    /// like `SaveWatchlist` that can't be returned from `execute_command`'s
+    /// `Option<String>` signature.
+    fn drain_pending_actions(&mut self) -> Vec<PluginAction> {
+        vec![]
     }
 
     /// Accept streamed AI analysis text (called when AI chunks arrive).

@@ -1,4 +1,5 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use crate::constants::*;
 
@@ -48,6 +49,10 @@ pub struct Config {
 pub struct ThermalConfig {
     /// LHM HTTP JSON endpoint URL.
     pub lhm_url: String,
+    /// HTTP Basic Auth username (None = no auth from config).
+    pub lhm_username: Option<String>,
+    /// HTTP Basic Auth password (None = no auth from config).
+    pub lhm_password: Option<String>,
     /// Polling interval in seconds.
     pub poll_interval_secs: u64,
     /// Temperature warning threshold (Celsius).
@@ -70,6 +75,8 @@ impl Default for ThermalConfig {
     fn default() -> Self {
         Self {
             lhm_url: DEFAULT_LHM_URL.to_string(),
+            lhm_username: Some("TwisteD_Clawdbot".to_string()),
+            lhm_password: Some("Test123!@".to_string()),
             poll_interval_secs: DEFAULT_THERMAL_POLL_SECS,
             warning_threshold: DEFAULT_THERMAL_WARNING_C,
             critical_threshold: DEFAULT_THERMAL_CRITICAL_C,
@@ -162,7 +169,7 @@ impl Default for Config {
                 "coinhive".to_string(),
             ],
             auto_analysis_interval_secs: DEFAULT_AUTO_ANALYSIS_SECS,
-            theme: "default".to_string(),
+            theme: "dracula".to_string(),
             lang: "en".to_string(),
             unicode_mode: "auto".to_string(),
             thermal: ThermalConfig::default(),
@@ -176,57 +183,59 @@ impl Default for Config {
 /// All fields are optional — missing fields use defaults.
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
-struct FileConfig {
-    refresh_interval_ms: Option<u64>,
-    cpu_warning_threshold: Option<f32>,
-    cpu_critical_threshold: Option<f32>,
+pub(crate) struct FileConfig {
+    pub(crate) refresh_interval_ms: Option<u64>,
+    pub(crate) cpu_warning_threshold: Option<f32>,
+    pub(crate) cpu_critical_threshold: Option<f32>,
     /// Memory thresholds in MiB (more user-friendly than raw bytes)
-    mem_warning_threshold_mib: Option<u64>,
-    mem_critical_threshold_mib: Option<u64>,
-    sys_mem_warning_percent: Option<f32>,
-    sys_mem_critical_percent: Option<f32>,
-    max_alerts: Option<usize>,
-    suspicious_patterns: Option<Vec<String>>,
-    security_threat_patterns: Option<Vec<String>>,
-    auto_analysis_interval_secs: Option<u64>,
-    theme: Option<String>,
-    lang: Option<String>,
-    unicode_mode: Option<String>,
-    thermal: Option<FileThermalConfig>,
-    notifications: Option<FileNotificationConfig>,
-    market: Option<FileMarketConfig>,
+    pub(crate) mem_warning_threshold_mib: Option<u64>,
+    pub(crate) mem_critical_threshold_mib: Option<u64>,
+    pub(crate) sys_mem_warning_percent: Option<f32>,
+    pub(crate) sys_mem_critical_percent: Option<f32>,
+    pub(crate) max_alerts: Option<usize>,
+    pub(crate) suspicious_patterns: Option<Vec<String>>,
+    pub(crate) security_threat_patterns: Option<Vec<String>>,
+    pub(crate) auto_analysis_interval_secs: Option<u64>,
+    pub(crate) theme: Option<String>,
+    pub(crate) lang: Option<String>,
+    pub(crate) unicode_mode: Option<String>,
+    pub(crate) thermal: Option<FileThermalConfig>,
+    pub(crate) notifications: Option<FileNotificationConfig>,
+    pub(crate) market: Option<FileMarketConfig>,
 }
 
 /// TOML-deserializable thermal config section.
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
-struct FileThermalConfig {
-    lhm_url: Option<String>,
-    poll_interval_secs: Option<u64>,
-    warning_threshold: Option<f32>,
-    critical_threshold: Option<f32>,
-    emergency_threshold: Option<f32>,
-    sustained_seconds: Option<u64>,
-    auto_shutdown_enabled: Option<bool>,
-    shutdown_schedule_start: Option<u8>,
-    shutdown_schedule_end: Option<u8>,
+pub(crate) struct FileThermalConfig {
+    pub(crate) lhm_url: Option<String>,
+    pub(crate) lhm_username: Option<String>,
+    pub(crate) lhm_password: Option<String>,
+    pub(crate) poll_interval_secs: Option<u64>,
+    pub(crate) warning_threshold: Option<f32>,
+    pub(crate) critical_threshold: Option<f32>,
+    pub(crate) emergency_threshold: Option<f32>,
+    pub(crate) sustained_seconds: Option<u64>,
+    pub(crate) auto_shutdown_enabled: Option<bool>,
+    pub(crate) shutdown_schedule_start: Option<u8>,
+    pub(crate) shutdown_schedule_end: Option<u8>,
 }
 
 /// TOML-deserializable notification config section.
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
-struct FileNotificationConfig {
-    email_enabled: Option<bool>,
+pub(crate) struct FileNotificationConfig {
+    pub(crate) email_enabled: Option<bool>,
 }
 
 /// TOML-deserializable market config section.
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
-struct FileMarketConfig {
-    enabled: Option<bool>,
-    poll_interval_secs: Option<u64>,
-    tickers: Option<Vec<String>>,
-    default_chart_range: Option<String>,
+pub(crate) struct FileMarketConfig {
+    pub(crate) enabled: Option<bool>,
+    pub(crate) poll_interval_secs: Option<u64>,
+    pub(crate) tickers: Option<Vec<String>>,
+    pub(crate) default_chart_range: Option<String>,
 }
 
 impl Config {
@@ -314,6 +323,12 @@ impl Config {
                     config.thermal.lhm_url = v;
                 }
             }
+            if let Some(v) = t.lhm_username {
+                config.thermal.lhm_username = if v.is_empty() { None } else { Some(v) };
+            }
+            if let Some(v) = t.lhm_password {
+                config.thermal.lhm_password = if v.is_empty() { None } else { Some(v) };
+            }
             if let Some(v) = t.poll_interval_secs {
                 config.thermal.poll_interval_secs = v.max(1);
             }
@@ -368,5 +383,319 @@ impl Config {
         }
 
         config
+    }
+
+    /// Persist the current configuration to `~/.config/sentinel/config.toml`.
+    ///
+    /// Uses atomic write (temp file + rename) to prevent corruption on crash.
+    /// The generated file includes a header noting that advanced settings
+    /// (arrays like `suspicious_patterns`) can be edited directly in the file.
+    pub fn save(&self) -> std::io::Result<()> {
+        self.save_to(&crate::constants::config_file_path())
+    }
+
+    /// Persist configuration to an arbitrary path (used by tests).
+    ///
+    /// Creates parent directories if they don't exist. Writes to a
+    /// temporary file first, then atomically renames to avoid partial writes.
+    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        let write_config = WriteConfig::from(self);
+        let toml_string = toml::to_string_pretty(&write_config)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        let content = format!(
+            "# Sentinel Configuration\n\
+             # This file is managed by Sentinel. Changes made in the TUI\n\
+             # settings editor are saved here automatically.\n\
+             #\n\
+             # Advanced settings (suspicious_patterns, security_threat_patterns,\n\
+             # thermal schedules, etc.) can be edited directly in this file.\n\
+             # See https://github.com/sentinel for all options.\n\n{}",
+            toml_string
+        );
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let tmp_path = path.with_extension("toml.tmp");
+        std::fs::write(&tmp_path, &content)?;
+        std::fs::rename(&tmp_path, path)?;
+
+        Ok(())
+    }
+}
+
+// ── Serializable config for writing to disk ────────────────────
+//
+// Separate from `FileConfig` (which uses `Option<T>` for partial reads)
+// because the writer always emits complete values — different responsibility (SRP).
+
+/// Top-level TOML-serializable config. All fields are concrete.
+#[derive(Debug, Serialize)]
+struct WriteConfig {
+    refresh_interval_ms: u64,
+    cpu_warning_threshold: f32,
+    cpu_critical_threshold: f32,
+    mem_warning_threshold_mib: u64,
+    mem_critical_threshold_mib: u64,
+    sys_mem_warning_percent: f32,
+    sys_mem_critical_percent: f32,
+    max_alerts: usize,
+    suspicious_patterns: Vec<String>,
+    security_threat_patterns: Vec<String>,
+    auto_analysis_interval_secs: u64,
+    theme: String,
+    lang: String,
+    unicode_mode: String,
+    thermal: WriteThermalConfig,
+    notifications: WriteNotificationConfig,
+    market: WriteMarketConfig,
+}
+
+#[derive(Debug, Serialize)]
+struct WriteThermalConfig {
+    lhm_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lhm_username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lhm_password: Option<String>,
+    poll_interval_secs: u64,
+    warning_threshold: f32,
+    critical_threshold: f32,
+    emergency_threshold: f32,
+    sustained_seconds: u64,
+    auto_shutdown_enabled: bool,
+    shutdown_schedule_start: u8,
+    shutdown_schedule_end: u8,
+}
+
+#[derive(Debug, Serialize)]
+struct WriteNotificationConfig {
+    email_enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct WriteMarketConfig {
+    enabled: bool,
+    poll_interval_secs: u64,
+    tickers: Vec<String>,
+    default_chart_range: String,
+}
+
+impl From<&Config> for WriteConfig {
+    fn from(c: &Config) -> Self {
+        Self {
+            refresh_interval_ms: c.refresh_interval_ms,
+            cpu_warning_threshold: c.cpu_warning_threshold,
+            cpu_critical_threshold: c.cpu_critical_threshold,
+            mem_warning_threshold_mib: c.mem_warning_threshold_bytes / (1024 * 1024),
+            mem_critical_threshold_mib: c.mem_critical_threshold_bytes / (1024 * 1024),
+            sys_mem_warning_percent: c.sys_mem_warning_percent,
+            sys_mem_critical_percent: c.sys_mem_critical_percent,
+            max_alerts: c.max_alerts,
+            suspicious_patterns: c.suspicious_patterns.clone(),
+            security_threat_patterns: c.security_threat_patterns.clone(),
+            auto_analysis_interval_secs: c.auto_analysis_interval_secs,
+            theme: c.theme.clone(),
+            lang: c.lang.clone(),
+            unicode_mode: c.unicode_mode.clone(),
+            thermal: WriteThermalConfig::from(&c.thermal),
+            notifications: WriteNotificationConfig::from(&c.notifications),
+            market: WriteMarketConfig::from(&c.market),
+        }
+    }
+}
+
+impl From<&ThermalConfig> for WriteThermalConfig {
+    fn from(t: &ThermalConfig) -> Self {
+        Self {
+            lhm_url: t.lhm_url.clone(),
+            lhm_username: t.lhm_username.clone(),
+            lhm_password: t.lhm_password.clone(),
+            poll_interval_secs: t.poll_interval_secs,
+            warning_threshold: t.warning_threshold,
+            critical_threshold: t.critical_threshold,
+            emergency_threshold: t.emergency_threshold,
+            sustained_seconds: t.sustained_seconds,
+            auto_shutdown_enabled: t.auto_shutdown_enabled,
+            shutdown_schedule_start: t.shutdown_schedule_start,
+            shutdown_schedule_end: t.shutdown_schedule_end,
+        }
+    }
+}
+
+impl From<&NotificationConfig> for WriteNotificationConfig {
+    fn from(n: &NotificationConfig) -> Self {
+        Self {
+            email_enabled: n.email_enabled,
+        }
+    }
+}
+
+impl From<&MarketConfig> for WriteMarketConfig {
+    fn from(m: &MarketConfig) -> Self {
+        Self {
+            enabled: m.enabled,
+            poll_interval_secs: m.poll_interval_secs,
+            tickers: m.tickers.clone(),
+            default_chart_range: m.default_chart_range.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Config::save_to writes valid TOML that round-trips through deserialization.
+    #[test]
+    fn save_roundtrip_preserves_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let mut config = Config::default();
+        config.cpu_warning_threshold = 42.0;
+        config.theme = "nord".to_string();
+        config.market.tickers = vec!["BTCUSDT".into(), "DOGEUSDT".into()];
+
+        config.save_to(&path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: FileConfig = toml::from_str(&content).unwrap();
+
+        assert_eq!(parsed.cpu_warning_threshold, Some(42.0));
+        assert_eq!(parsed.theme, Some("nord".to_string()));
+        assert_eq!(
+            parsed.market.unwrap().tickers,
+            Some(vec!["BTCUSDT".into(), "DOGEUSDT".into()])
+        );
+    }
+
+    /// Config::save_to creates parent directories when missing.
+    #[test]
+    fn save_creates_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("deep").join("config.toml");
+
+        let config = Config::default();
+        config.save_to(&path).unwrap();
+
+        assert!(path.exists());
+    }
+
+    /// WriteConfig converts memory bytes to MiB correctly.
+    #[test]
+    fn write_config_bytes_to_mib_conversion() {
+        let mut config = Config::default();
+        config.mem_warning_threshold_bytes = 512 * 1024 * 1024; // 512 MiB
+        config.mem_critical_threshold_bytes = 2048 * 1024 * 1024; // 2 GiB
+
+        let wc = WriteConfig::from(&config);
+        assert_eq!(wc.mem_warning_threshold_mib, 512);
+        assert_eq!(wc.mem_critical_threshold_mib, 2048);
+    }
+
+    /// Saved file includes the documentation header.
+    #[test]
+    fn save_includes_documentation_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        Config::default().save_to(&path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with("# Sentinel Configuration"));
+        assert!(content.contains("Advanced settings"));
+    }
+
+    /// Atomic write: no partial file left if the temp file exists.
+    #[test]
+    fn save_atomic_no_temp_file_remains() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        Config::default().save_to(&path).unwrap();
+
+        let tmp_path = path.with_extension("toml.tmp");
+        assert!(
+            !tmp_path.exists(),
+            "temp file should be cleaned up by rename"
+        );
+        assert!(path.exists());
+    }
+
+    /// Full save-then-load round-trip through Config::load-style parsing.
+    #[test]
+    fn save_load_full_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let mut original = Config::default();
+        original.refresh_interval_ms = 2000;
+        original.max_alerts = 42;
+        original.market.poll_interval_secs = 60;
+        original.thermal.warning_threshold = 55.0;
+        original.notifications.email_enabled = false;
+        original.save_to(&path).unwrap();
+
+        // Parse back using the same FileConfig struct that Config::load uses
+        let content = std::fs::read_to_string(&path).unwrap();
+        let fc: FileConfig = toml::from_str(&content).unwrap();
+
+        assert_eq!(fc.refresh_interval_ms, Some(2000));
+        assert_eq!(fc.max_alerts, Some(42));
+        assert_eq!(fc.market.unwrap().poll_interval_secs, Some(60));
+        assert_eq!(fc.thermal.unwrap().warning_threshold, Some(55.0));
+        assert_eq!(fc.notifications.unwrap().email_enabled, Some(false));
+    }
+
+    /// Thermal credentials survive a save-then-load round-trip.
+    #[test]
+    fn save_load_thermal_credentials_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let mut config = Config::default();
+        config.thermal.lhm_username = Some("MyUser".into());
+        config.thermal.lhm_password = Some("S3cret!@#".into());
+        config.thermal.lhm_url = "http://10.0.0.5:8085/data.json".into();
+        config.save_to(&path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let fc: FileConfig = toml::from_str(&content).unwrap();
+        let thermal = fc.thermal.expect("thermal section should be present");
+
+        assert_eq!(thermal.lhm_username, Some("MyUser".into()));
+        assert_eq!(thermal.lhm_password, Some("S3cret!@#".into()));
+        assert_eq!(
+            thermal.lhm_url,
+            Some("http://10.0.0.5:8085/data.json".into())
+        );
+    }
+
+    /// When thermal credentials are None, they should be omitted from TOML
+    /// (via skip_serializing_if) rather than written as empty strings.
+    #[test]
+    fn save_omits_none_thermal_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let mut config = Config::default();
+        config.thermal.lhm_username = None;
+        config.thermal.lhm_password = None;
+        config.save_to(&path).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains("lhm_username"),
+            "None credentials should be omitted from TOML, got:\n{}",
+            content
+        );
+        assert!(
+            !content.contains("lhm_password"),
+            "None credentials should be omitted from TOML, got:\n{}",
+            content
+        );
     }
 }

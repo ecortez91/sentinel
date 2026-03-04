@@ -96,6 +96,7 @@ Guidelines:
 /// Owns all runtime resources: terminal, state, data collectors, AI channels.
 pub struct App {
     state: AppState,
+    config: Config,
     collector: SystemCollector,
     detector: AlertDetector,
     claude_client: Option<ClaudeClient>,
@@ -238,7 +239,7 @@ impl App {
         {
             let tx = thermal_tx;
             let lhm_url = crate::thermal::resolve_lhm_url(&config.thermal.lhm_url);
-            let lhm_auth = crate::thermal::LhmAuth::from_env();
+            let lhm_auth = crate::thermal::LhmAuth::from_config_or_env(&config.thermal);
             let poll_secs = config.thermal.poll_interval_secs;
             eprintln!("Thermal: polling {} (auth: {})", lhm_url, if lhm_auth.is_some() { "yes" } else { "no" });
             tokio::spawn(async move {
@@ -317,6 +318,7 @@ impl App {
 
         Ok(Self {
             state,
+            config: config.clone(),
             collector,
             detector,
             claude_client,
@@ -1041,6 +1043,14 @@ impl App {
                     }
                     PluginAction::SetStatus(msg) => {
                         self.state.set_status(msg);
+                        return false;
+                    }
+                    PluginAction::SaveWatchlist(tickers) => {
+                        self.persist_watchlist(tickers);
+                        return false;
+                    }
+                    PluginAction::ConfigChanged(new_config) => {
+                        self.apply_config_change(*new_config);
                         return false;
                     }
                     PluginAction::Ignored => {
@@ -2178,6 +2188,51 @@ impl App {
                     let _ = store.sync_favorites(favs);
                 }
             }
+        }
+    }
+
+    /// Persist an updated market watchlist to config.toml.
+    fn persist_watchlist(&mut self, tickers: Vec<String>) {
+        self.config.market.tickers = tickers;
+        if let Err(e) = self.config.save() {
+            self.state
+                .set_status(format!("Failed to save watchlist: {}", e));
+        }
+    }
+
+    /// Apply a full config change: hot-reload affected state and persist to disk.
+    fn apply_config_change(&mut self, new_config: Config) {
+        // Hot-reload theme
+        if new_config.theme != self.config.theme {
+            if let Some(theme) = crate::ui::Theme::by_name(&new_config.theme) {
+                self.state.theme = theme;
+            }
+        }
+
+        // Hot-reload language
+        if new_config.lang != self.config.lang {
+            rust_i18n::set_locale(&new_config.lang);
+            self.state.current_lang = new_config.lang.clone();
+        }
+
+        // Hot-reload auto-analysis interval
+        if new_config.auto_analysis_interval_secs != self.config.auto_analysis_interval_secs {
+            if new_config.auto_analysis_interval_secs == 0 {
+                self.auto_analysis_enabled = false;
+            } else {
+                self.auto_analysis_enabled = true;
+                self.insight_interval =
+                    Duration::from_secs(new_config.auto_analysis_interval_secs.max(30));
+            }
+        }
+
+        // Persist to disk
+        self.config = new_config;
+        if let Err(e) = self.config.save() {
+            self.state
+                .set_status(format!("Config save failed: {}", e));
+        } else {
+            self.state.set_status("Settings saved".into());
         }
     }
 

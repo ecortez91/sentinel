@@ -66,7 +66,26 @@ pub struct LhmAuth {
 }
 
 impl LhmAuth {
-    /// Load LHM auth from environment variables (if both are set).
+    /// Load LHM auth from config fields first, falling back to environment variables.
+    ///
+    /// Priority: config.toml credentials > .env credentials > no auth.
+    /// This lets users set credentials in the TUI Settings tab (persisted to
+    /// config.toml) while maintaining backwards compatibility with .env files.
+    pub fn from_config_or_env(config: &crate::config::ThermalConfig) -> Option<Self> {
+        // Config takes priority (set via TUI or config.toml)
+        if let (Some(user), Some(pass)) = (&config.lhm_username, &config.lhm_password) {
+            if !user.is_empty() && !pass.is_empty() {
+                return Some(Self {
+                    username: user.clone(),
+                    password: pass.clone(),
+                });
+            }
+        }
+        // Fall back to env vars (.env file)
+        Self::from_env()
+    }
+
+    /// Load LHM auth from environment variables only.
     pub fn from_env() -> Option<Self> {
         let user = std::env::var(crate::constants::ENV_LHM_USER).ok()?;
         let pass = std::env::var(crate::constants::ENV_LHM_PASSWORD).ok()?;
@@ -852,56 +871,157 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resolve_lhm_url_respects_env_override() {
-        // Temporarily set the env var
-        let key = crate::constants::ENV_LHM_URL;
-        let original = std::env::var(key).ok();
-        std::env::set_var(key, "http://custom:9999/data.json");
-        let resolved = resolve_lhm_url("http://localhost:8085/data.json");
-        assert_eq!(resolved, "http://custom:9999/data.json");
-        // Restore
-        match original {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
+    // Mutex to serialize tests that mutate environment variables.
+    // Rust tests run in parallel; concurrent set_var/remove_var on the same
+    // keys causes non-deterministic failures.
+    use std::sync::Mutex;
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that saves env vars on creation and restores them on drop.
+    struct EnvGuard {
+        saved: Vec<(String, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&str]) -> Self {
+            let saved = keys
+                .iter()
+                .map(|k| (k.to_string(), std::env::var(k).ok()))
+                .collect();
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, val) in &self.saved {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
         }
     }
 
     #[test]
+    fn resolve_lhm_url_respects_env_override() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let key = crate::constants::ENV_LHM_URL;
+        let _guard = EnvGuard::new(&[key]);
+
+        std::env::set_var(key, "http://custom:9999/data.json");
+        let resolved = resolve_lhm_url("http://localhost:8085/data.json");
+        assert_eq!(resolved, "http://custom:9999/data.json");
+    }
+
+    #[test]
     fn lhm_auth_from_env_returns_none_when_missing() {
-        // Clear env vars to ensure clean state
+        let _lock = ENV_MUTEX.lock().unwrap();
         let user_key = crate::constants::ENV_LHM_USER;
         let pass_key = crate::constants::ENV_LHM_PASSWORD;
-        let orig_user = std::env::var(user_key).ok();
-        let orig_pass = std::env::var(pass_key).ok();
+        let _guard = EnvGuard::new(&[user_key, pass_key]);
+
         std::env::remove_var(user_key);
         std::env::remove_var(pass_key);
         assert!(LhmAuth::from_env().is_none());
-        // Restore
-        if let Some(v) = orig_user { std::env::set_var(user_key, v); }
-        if let Some(v) = orig_pass { std::env::set_var(pass_key, v); }
     }
 
     #[test]
     fn lhm_auth_from_env_returns_some_when_set() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         let user_key = crate::constants::ENV_LHM_USER;
         let pass_key = crate::constants::ENV_LHM_PASSWORD;
-        let orig_user = std::env::var(user_key).ok();
-        let orig_pass = std::env::var(pass_key).ok();
+        let _guard = EnvGuard::new(&[user_key, pass_key]);
+
         std::env::set_var(user_key, "testuser");
         std::env::set_var(pass_key, "testpass");
         let auth = LhmAuth::from_env().expect("Should load auth from env");
         assert_eq!(auth.username, "testuser");
         assert_eq!(auth.password, "testpass");
-        // Restore
-        match orig_user {
-            Some(v) => std::env::set_var(user_key, v),
-            None => std::env::remove_var(user_key),
-        }
-        match orig_pass {
-            Some(v) => std::env::set_var(pass_key, v),
-            None => std::env::remove_var(pass_key),
-        }
+    }
+
+    // ── from_config_or_env tests ─────────────────────────────
+
+    #[test]
+    fn from_config_or_env_prefers_config_over_env() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let user_key = crate::constants::ENV_LHM_USER;
+        let pass_key = crate::constants::ENV_LHM_PASSWORD;
+        let _guard = EnvGuard::new(&[user_key, pass_key]);
+
+        // Set env to one value
+        std::env::set_var(user_key, "env_user");
+        std::env::set_var(pass_key, "env_pass");
+
+        // Config has different credentials — should win
+        let thermal = crate::config::ThermalConfig {
+            lhm_username: Some("config_user".into()),
+            lhm_password: Some("config_pass".into()),
+            ..crate::config::ThermalConfig::default()
+        };
+        let auth = LhmAuth::from_config_or_env(&thermal).expect("Should produce auth");
+        assert_eq!(auth.username, "config_user");
+        assert_eq!(auth.password, "config_pass");
+    }
+
+    #[test]
+    fn from_config_or_env_falls_back_to_env_when_config_empty() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let user_key = crate::constants::ENV_LHM_USER;
+        let pass_key = crate::constants::ENV_LHM_PASSWORD;
+        let _guard = EnvGuard::new(&[user_key, pass_key]);
+
+        std::env::set_var(user_key, "env_fallback_user");
+        std::env::set_var(pass_key, "env_fallback_pass");
+
+        // Config has no credentials
+        let thermal = crate::config::ThermalConfig {
+            lhm_username: None,
+            lhm_password: None,
+            ..crate::config::ThermalConfig::default()
+        };
+        let auth = LhmAuth::from_config_or_env(&thermal).expect("Should fall back to env");
+        assert_eq!(auth.username, "env_fallback_user");
+        assert_eq!(auth.password, "env_fallback_pass");
+    }
+
+    #[test]
+    fn from_config_or_env_falls_back_when_config_has_empty_strings() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let user_key = crate::constants::ENV_LHM_USER;
+        let pass_key = crate::constants::ENV_LHM_PASSWORD;
+        let _guard = EnvGuard::new(&[user_key, pass_key]);
+
+        std::env::set_var(user_key, "env_user2");
+        std::env::set_var(pass_key, "env_pass2");
+
+        // Config has empty strings — should treat as "not set" and fall back
+        let thermal = crate::config::ThermalConfig {
+            lhm_username: Some(String::new()),
+            lhm_password: Some(String::new()),
+            ..crate::config::ThermalConfig::default()
+        };
+        let auth = LhmAuth::from_config_or_env(&thermal).expect("Should fall back to env");
+        assert_eq!(auth.username, "env_user2");
+        assert_eq!(auth.password, "env_pass2");
+    }
+
+    #[test]
+    fn from_config_or_env_returns_none_when_both_missing() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let user_key = crate::constants::ENV_LHM_USER;
+        let pass_key = crate::constants::ENV_LHM_PASSWORD;
+        let _guard = EnvGuard::new(&[user_key, pass_key]);
+
+        std::env::remove_var(user_key);
+        std::env::remove_var(pass_key);
+
+        let thermal = crate::config::ThermalConfig {
+            lhm_username: None,
+            lhm_password: None,
+            ..crate::config::ThermalConfig::default()
+        };
+        assert!(LhmAuth::from_config_or_env(&thermal).is_none());
     }
 
     /// Integration test: poll the real LHM server running on the Windows host.

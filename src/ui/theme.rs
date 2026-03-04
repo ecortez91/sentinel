@@ -4,13 +4,13 @@ use serde::Deserialize;
 use crate::constants::*;
 use crate::models::AlertSeverity;
 
-/// All available built-in theme names.
+/// All available built-in theme names. Dracula is first (the default).
 pub const BUILTIN_THEME_NAMES: &[&str] = &[
+    "dracula",
     "default",
     "gruvbox",
     "nord",
     "catppuccin",
-    "dracula",
     "solarized",
 ];
 
@@ -389,7 +389,7 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::default_dark()
+        Self::dracula()
     }
 }
 
@@ -639,8 +639,22 @@ mod tests {
     // ── Default trait ─────────────────────────────────────────────
 
     #[test]
-    fn default_is_default_dark() {
+    fn default_is_dracula() {
         let d = Theme::default();
-        assert_eq!(d.name, "default");
+        assert_eq!(d.name, "dracula");
+    }
+
+    #[test]
+    fn theme_cycle_starts_from_dracula() {
+        let theme = Theme::default();
+        assert_eq!(theme.name, "dracula");
+        let next = theme.next_builtin();
+        // "default" is the second entry in BUILTIN_THEME_NAMES
+        assert_eq!(next.name, "default");
+    }
+
+    #[test]
+    fn builtin_theme_names_dracula_first() {
+        assert_eq!(BUILTIN_THEME_NAMES[0], "dracula");
     }
 }
