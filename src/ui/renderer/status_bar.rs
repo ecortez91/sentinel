@@ -106,6 +106,10 @@ pub fn render_status_bar_with_plugins(
             spans.push(dim(" Refresh "));
             spans.push(badge("Esc", t.accent_secondary));
             spans.push(dim(" Close "));
+            spans.push(badge(":", t.accent_secondary));
+            spans.push(dim(" listeners "));
+            spans.push(badge(":", t.accent_secondary));
+            spans.push(dim(" port <n> "));
         }
         Tab::Plugin(i) => {
             // Show plugin-specific hints from the plugin trait

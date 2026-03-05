@@ -28,6 +28,8 @@ pub struct Config {
     pub suspicious_patterns: Vec<String>,
     /// Known crypto miners and malware patterns
     pub security_threat_patterns: Vec<String>,
+    /// Parent process names whose zombie children are silently ignored
+    pub ignored_zombie_parents: Vec<String>,
     /// Auto-analysis interval in seconds (0 = disabled)
     pub auto_analysis_interval_secs: u64,
     /// Theme name (built-in or custom)
@@ -180,6 +182,10 @@ impl Default for Config {
                 "ncat -e".to_string(),
                 "coinhive".to_string(),
             ],
+            ignored_zombie_parents: DEFAULT_IGNORED_ZOMBIE_PARENTS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             auto_analysis_interval_secs: DEFAULT_AUTO_ANALYSIS_SECS,
             theme: "dracula".to_string(),
             lang: "en".to_string(),
@@ -207,6 +213,7 @@ pub(crate) struct FileConfig {
     pub(crate) max_alerts: Option<usize>,
     pub(crate) suspicious_patterns: Option<Vec<String>>,
     pub(crate) security_threat_patterns: Option<Vec<String>>,
+    pub(crate) ignored_zombie_parents: Option<Vec<String>>,
     pub(crate) auto_analysis_interval_secs: Option<u64>,
     pub(crate) theme: Option<String>,
     pub(crate) lang: Option<String>,
@@ -311,6 +318,11 @@ impl Config {
         if let Some(v) = file_config.security_threat_patterns {
             if !v.is_empty() {
                 config.security_threat_patterns = v;
+            }
+        }
+        if let Some(v) = file_config.ignored_zombie_parents {
+            if !v.is_empty() {
+                config.ignored_zombie_parents = v;
             }
         }
         if let Some(v) = file_config.auto_analysis_interval_secs {
@@ -472,6 +484,7 @@ struct WriteConfig {
     max_alerts: usize,
     suspicious_patterns: Vec<String>,
     security_threat_patterns: Vec<String>,
+    ignored_zombie_parents: Vec<String>,
     auto_analysis_interval_secs: u64,
     theme: String,
     lang: String,
@@ -530,6 +543,7 @@ impl From<&Config> for WriteConfig {
             max_alerts: c.max_alerts,
             suspicious_patterns: c.suspicious_patterns.clone(),
             security_threat_patterns: c.security_threat_patterns.clone(),
+            ignored_zombie_parents: c.ignored_zombie_parents.clone(),
             auto_analysis_interval_secs: c.auto_analysis_interval_secs,
             theme: c.theme.clone(),
             lang: c.lang.clone(),

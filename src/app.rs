@@ -538,6 +538,7 @@ impl App {
                 &self.state.processes,
                 &self.state.alerts,
                 store,
+                &self.config.ignored_zombie_parents,
             )
         } else {
             String::new()
@@ -1613,8 +1614,11 @@ impl App {
             // System diagnostics — returns report with actions
             "why" | "slow" | "why-slow" | "contention" => {
                 if let Some(system) = &self.state.system {
-                    let report =
-                        DiagnosticEngine::resource_contention(system, &self.state.processes);
+                    let report = DiagnosticEngine::resource_contention(
+                        system,
+                        &self.state.processes,
+                        &self.config.ignored_zombie_parents,
+                    );
                     CommandResult::from_report(&report)
                 } else {
                     CommandResult::text_only("No system data available yet.".to_string())
@@ -2420,9 +2424,31 @@ impl App {
         }
         self.state.security.slow_refresh_count += 1;
 
-        // Score alert: fire when score drops below threshold
+        // Track score changes as timeline events
         let score = self.state.security.score;
         let prev = self.state.security.prev_score;
+        if score != prev {
+            let direction = if score > prev { "up" } else { "down" };
+            let label = crate::security::state::score_label(score);
+            let severity = if score < 40 {
+                crate::models::AlertSeverity::Critical
+            } else if score < 60 {
+                crate::models::AlertSeverity::Warning
+            } else {
+                crate::models::AlertSeverity::Info
+            };
+            let event = crate::security::state::SecurityEvent {
+                timestamp: chrono::Local::now(),
+                kind: crate::security::state::SecurityEventKind::ScoreChange,
+                severity,
+                message: format!("Score {} {} -> {} ({})", direction, prev, score, label),
+                pid: None,
+            };
+            self.state.security.events.insert(0, event);
+            self.state.security.events.truncate(MAX_SECURITY_EVENTS);
+        }
+
+        // Score alert: fire when score drops below threshold
         if score < SECURITY_SCORE_ALERT_THRESHOLD && prev >= SECURITY_SCORE_ALERT_THRESHOLD {
             let label = crate::security::state::score_label(score);
             let alert = crate::models::Alert::new(
@@ -2553,18 +2579,19 @@ impl App {
         }
     }
 
-    /// Toggle detail popup for Listeners / Connections panel.
+    /// Toggle detail popup for Listeners, Connections, or Timeline panel.
     fn security_enter(&mut self) {
         let panel = self.state.security.focused_panel;
         match panel {
             crate::security::state::SecurityPanel::Listeners
-            | crate::security::state::SecurityPanel::Connections => {
+            | crate::security::state::SecurityPanel::Connections
+            | crate::security::state::SecurityPanel::Timeline => {
                 let count = self.state.security.focused_item_count();
                 if count > 0 {
                     self.state.security.detail_popup = !self.state.security.detail_popup;
                 }
             }
-            _ => {} // No detail popup for other panels
+            _ => {} // No detail popup for ThreatSummary / Integrity
         }
     }
 }

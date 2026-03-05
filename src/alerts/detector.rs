@@ -57,11 +57,15 @@ impl AlertDetector {
         self.check_system_memory(&mut raw_alerts, system);
         self.check_system_cpu(&mut raw_alerts, system);
 
+        // Build PID -> process name lookup for parent resolution (zombie filtering)
+        let pid_names: std::collections::HashMap<u32, &str> =
+            processes.iter().map(|p| (p.pid, p.name.as_str())).collect();
+
         // Per-process checks
         for proc in processes {
             self.check_cpu_usage(&mut raw_alerts, proc);
             self.check_memory_usage(&mut raw_alerts, proc);
-            self.check_zombie(&mut raw_alerts, proc);
+            self.check_zombie(&mut raw_alerts, proc, &pid_names);
             self.check_suspicious(&mut raw_alerts, proc);
             self.check_security_threats(&mut raw_alerts, proc);
             self.check_memory_leak(&mut raw_alerts, proc);
@@ -205,18 +209,49 @@ impl AlertDetector {
         }
     }
 
-    fn check_zombie(&self, alerts: &mut Vec<Alert>, proc: &ProcessInfo) {
-        if proc.status == ProcessStatus::Zombie {
-            alerts.push(Alert::new(
-                AlertSeverity::Warning,
-                AlertCategory::Zombie,
-                &proc.name,
-                proc.pid,
-                format!("Zombie process: {} (PID {})", proc.name, proc.pid),
-                1.0,
-                0.0,
-            ));
+    fn check_zombie(
+        &self,
+        alerts: &mut Vec<Alert>,
+        proc: &ProcessInfo,
+        pid_names: &std::collections::HashMap<u32, &str>,
+    ) {
+        if proc.status != ProcessStatus::Zombie {
+            return;
         }
+
+        // Skip zombies whose parent is in the ignore list
+        if let Some(ppid) = proc.parent_pid {
+            if let Some(parent_name) = pid_names.get(&ppid) {
+                let parent_lower = parent_name.to_lowercase();
+                if self
+                    .config
+                    .ignored_zombie_parents
+                    .iter()
+                    .any(|pat| parent_lower.contains(&pat.to_lowercase()))
+                {
+                    return;
+                }
+            }
+        }
+
+        let parent_suffix = proc
+            .parent_pid
+            .and_then(|ppid| pid_names.get(&ppid))
+            .map(|pn| format!(" [parent: {}]", pn))
+            .unwrap_or_default();
+
+        alerts.push(Alert::new(
+            AlertSeverity::Warning,
+            AlertCategory::Zombie,
+            &proc.name,
+            proc.pid,
+            format!(
+                "Zombie process: {} (PID {}){}",
+                proc.name, proc.pid, parent_suffix
+            ),
+            1.0,
+            0.0,
+        ));
     }
 
     fn check_suspicious(&self, alerts: &mut Vec<Alert>, proc: &ProcessInfo) {
@@ -545,5 +580,142 @@ mod tests {
         // Second call within cooldown — should be filtered
         let alerts2 = det.check_thermal(&snap);
         assert!(alerts2.is_empty());
+    }
+
+    // ── Zombie filter tests ───────────────────────────────────────
+
+    fn make_system_snapshot() -> SystemSnapshot {
+        SystemSnapshot {
+            global_cpu_usage: 20.0,
+            cpu_usages: vec![20.0],
+            cpu_count: 1,
+            total_memory: 16_000_000_000,
+            used_memory: 4_000_000_000,
+            total_swap: 1_000_000_000,
+            used_swap: 0,
+            load_avg_1: 0.5,
+            load_avg_5: 0.3,
+            load_avg_15: 0.2,
+            uptime: 3600,
+            hostname: "test".to_string(),
+            os_name: "Linux".to_string(),
+            total_processes: 1,
+            networks: Vec::new(),
+            disks: Vec::new(),
+            cpu_temp: None,
+            gpu: None,
+            battery: None,
+        }
+    }
+
+    fn make_running_process(pid: u32, name: &str) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            name: name.to_string(),
+            cmd: name.to_string(),
+            cpu_usage: 1.0,
+            memory_bytes: 1024,
+            memory_percent: 0.0,
+            disk_read_bytes: 0,
+            disk_write_bytes: 0,
+            status: ProcessStatus::Running,
+            user: "test".to_string(),
+            start_time: 0,
+            parent_pid: None,
+            thread_count: None,
+        }
+    }
+
+    fn make_zombie_process(pid: u32, name: &str, parent_pid: Option<u32>) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            name: name.to_string(),
+            cmd: name.to_string(),
+            cpu_usage: 0.0,
+            memory_bytes: 0,
+            memory_percent: 0.0,
+            disk_read_bytes: 0,
+            disk_write_bytes: 0,
+            status: ProcessStatus::Zombie,
+            user: "test".to_string(),
+            start_time: 0,
+            parent_pid,
+            thread_count: None,
+        }
+    }
+
+    #[test]
+    fn zombie_ignored_when_parent_in_ignore_list() {
+        let mut det = make_detector();
+        let parent = make_running_process(100, "opencode");
+        let zombie = make_zombie_process(200, "sh", Some(100));
+        let system = make_system_snapshot();
+        let procs = vec![parent, zombie];
+        let alerts = det.analyze(&system, &procs);
+        assert!(
+            alerts.iter().all(|a| a.category != AlertCategory::Zombie),
+            "Zombie with ignored parent should not generate an alert"
+        );
+    }
+
+    #[test]
+    fn zombie_alert_fires_when_parent_not_ignored() {
+        let mut det = make_detector();
+        let parent = make_running_process(100, "bash");
+        let zombie = make_zombie_process(200, "defunct", Some(100));
+        let system = make_system_snapshot();
+        let procs = vec![parent, zombie];
+        let alerts = det.analyze(&system, &procs);
+        assert!(
+            alerts.iter().any(|a| a.category == AlertCategory::Zombie),
+            "Zombie with non-ignored parent should generate an alert"
+        );
+    }
+
+    #[test]
+    fn zombie_alert_fires_when_no_parent() {
+        let mut det = make_detector();
+        let zombie = make_zombie_process(200, "orphan", None);
+        let system = make_system_snapshot();
+        let procs = vec![zombie];
+        let alerts = det.analyze(&system, &procs);
+        assert!(
+            alerts.iter().any(|a| a.category == AlertCategory::Zombie),
+            "Zombie without parent should still generate an alert"
+        );
+    }
+
+    #[test]
+    fn zombie_alert_message_includes_parent_name() {
+        let mut det = make_detector();
+        let parent = make_running_process(100, "bash");
+        let zombie = make_zombie_process(200, "defunct", Some(100));
+        let system = make_system_snapshot();
+        let procs = vec![parent, zombie];
+        let alerts = det.analyze(&system, &procs);
+        let zombie_alert = alerts
+            .iter()
+            .find(|a| a.category == AlertCategory::Zombie)
+            .expect("Expected a zombie alert");
+        assert!(
+            zombie_alert.message.contains("[parent: bash]"),
+            "Alert message should include parent name, got: {}",
+            zombie_alert.message
+        );
+    }
+
+    #[test]
+    fn zombie_parent_ignore_is_case_insensitive() {
+        let mut det = make_detector();
+        // Config has "opencode" lowercase; parent has "OpenCode" mixed case
+        let parent = make_running_process(100, "OpenCode");
+        let zombie = make_zombie_process(200, "sh", Some(100));
+        let system = make_system_snapshot();
+        let procs = vec![parent, zombie];
+        let alerts = det.analyze(&system, &procs);
+        assert!(
+            alerts.iter().all(|a| a.category != AlertCategory::Zombie),
+            "Parent ignore matching should be case-insensitive"
+        );
     }
 }

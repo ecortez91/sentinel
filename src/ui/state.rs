@@ -716,7 +716,7 @@ impl AppState {
                 }
             }
             Tab::Thermal => {}   // Scrolling handled by thermal tab renderer
-            Tab::Security => {}  // No scrollable content yet
+            Tab::Security => {}  // Handled by security_scroll_up() in app.rs
             Tab::Plugin(_) => {} // Handled by plugin.handle_key()
         }
     }
@@ -741,7 +741,7 @@ impl AppState {
                 self.ai_scroll += 1;
             }
             Tab::Thermal => {}   // Scrolling handled by thermal tab renderer
-            Tab::Security => {}  // No scrollable content yet
+            Tab::Security => {}  // Handled by security_scroll_down() in app.rs
             Tab::Plugin(_) => {} // Handled by plugin.handle_key()
         }
     }

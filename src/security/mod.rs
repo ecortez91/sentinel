@@ -110,7 +110,11 @@ fn render_listeners(frame: &mut Frame, area: Rect, sec: &SecurityState, t: &crat
         t.border_style()
     };
 
-    let title = format!(" Active Listeners ({}) ", sec.listeners.len());
+    let title = format!(
+        " {} ({}) ",
+        SecurityPanel::Listeners.label(),
+        sec.listeners.len()
+    );
     let block = Block::default()
         .title(Span::styled(
             title,
@@ -198,7 +202,11 @@ fn render_connections(frame: &mut Frame, area: Rect, sec: &SecurityState, t: &cr
         t.border_style()
     };
 
-    let title = format!(" Connections ({}) ", sec.connections.len());
+    let title = format!(
+        " {} ({}) ",
+        SecurityPanel::Connections.label(),
+        sec.connections.len()
+    );
     let block = Block::default()
         .title(Span::styled(
             title,
@@ -277,7 +285,11 @@ fn render_timeline(frame: &mut Frame, area: Rect, sec: &SecurityState, t: &crate
         t.border_style()
     };
 
-    let title = format!(" Security Events ({}) ", sec.events.len());
+    let title = format!(
+        " {} ({}) ",
+        SecurityPanel::Timeline.label(),
+        sec.events.len()
+    );
     let block = Block::default()
         .title(Span::styled(
             title,
@@ -328,7 +340,7 @@ fn render_timeline(frame: &mut Frame, area: Rect, sec: &SecurityState, t: &crate
                 Style::default()
             };
 
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(
                     format!(" [{:>4}] ", age),
                     if is_selected {
@@ -361,7 +373,18 @@ fn render_timeline(frame: &mut Frame, area: Rect, sec: &SecurityState, t: &crate
                         Style::default().fg(t.text_primary)
                     },
                 ),
-            ])
+            ];
+            if let Some(pid) = ev.pid {
+                spans.push(Span::styled(
+                    format!(" [PID {}]", pid),
+                    if is_selected {
+                        style
+                    } else {
+                        Style::default().fg(t.text_muted)
+                    },
+                ));
+            }
+            Line::from(spans)
         })
         .collect();
 
@@ -378,9 +401,10 @@ fn render_threat_summary(frame: &mut Frame, area: Rect, sec: &SecurityState, t: 
         t.border_style()
     };
 
+    let title = format!(" {} ", SecurityPanel::ThreatSummary.label());
     let block = Block::default()
         .title(Span::styled(
-            " Threat Summary ",
+            title,
             Style::default()
                 .fg(if is_focused { t.accent } else { t.text_primary })
                 .add_modifier(Modifier::BOLD),
@@ -471,9 +495,10 @@ fn render_integrity(frame: &mut Frame, area: Rect, sec: &SecurityState, t: &crat
         t.border_style()
     };
 
+    let title = format!(" {} ", SecurityPanel::Integrity.label());
     let block = Block::default()
         .title(Span::styled(
-            " System Integrity ",
+            title,
             Style::default()
                 .fg(if is_focused { t.accent } else { t.text_primary })
                 .add_modifier(Modifier::BOLD),
@@ -653,6 +678,49 @@ fn render_detail_popup(frame: &mut Frame, area: Rect, sec: &SecurityState, t: &c
                     Span::styled("  State:    ", Style::default().fg(t.text_dim)),
                     Span::styled(&conn.state, Style::default().fg(t.text_primary)),
                 ]));
+            }
+        }
+        SecurityPanel::Timeline => {
+            if let Some(event) = sec.events.get(sec.selected_index) {
+                lines.push(Line::from(vec![
+                    Span::styled("  Time:     ", Style::default().fg(t.text_dim)),
+                    Span::styled(
+                        event.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        Style::default()
+                            .fg(t.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled("  Kind:     ", Style::default().fg(t.text_dim)),
+                    Span::styled(
+                        format!("{}", event.kind),
+                        Style::default().fg(t.text_primary),
+                    ),
+                ]));
+                let sev_color = match event.severity {
+                    crate::models::AlertSeverity::Danger => Color::Red,
+                    crate::models::AlertSeverity::Critical => Color::Rgb(255, 165, 0),
+                    crate::models::AlertSeverity::Warning => Color::Yellow,
+                    crate::models::AlertSeverity::Info => Color::Green,
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("  Severity: ", Style::default().fg(t.text_dim)),
+                    Span::styled(
+                        format!("{}", event.severity),
+                        Style::default().fg(sev_color),
+                    ),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled("  Message:  ", Style::default().fg(t.text_dim)),
+                    Span::styled(&event.message, Style::default().fg(t.text_primary)),
+                ]));
+                if let Some(pid) = event.pid {
+                    lines.push(Line::from(vec![
+                        Span::styled("  PID:      ", Style::default().fg(t.text_dim)),
+                        Span::styled(pid.to_string(), Style::default().fg(t.text_primary)),
+                    ]));
+                }
             }
         }
         _ => {

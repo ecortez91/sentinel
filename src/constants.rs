@@ -157,6 +157,8 @@ pub const SECURITY_REFRESH_TICKS: u64 = 5;
 pub const SECURITY_SLOW_REFRESH_CYCLES: u64 = 12;
 /// Maximum security events retained in the timeline.
 pub const MAX_SECURITY_EVENTS: usize = 200;
+/// Maximum auth events to include in the security timeline per refresh.
+pub const MAX_AUTH_EVENTS: usize = 20;
 /// Maximum connections shown.
 pub const MAX_SECURITY_CONNECTIONS: usize = 100;
 /// Security score threshold for "FAIR" — alert when dropping below this.
@@ -188,6 +190,12 @@ pub const KNOWN_PORTS: &[(u16, &str)] = &[
     (9090, ""), // generic monitoring
     (27017, "mongod"),
 ];
+
+// ── Zombie Alert Filtering ─────────────────────────────────────────
+/// Default parent process names whose zombie children are silently ignored.
+/// Coding tools spawn transient subprocesses (sh, git, etc.) that briefly
+/// become zombies before being reaped — these are noise, not real issues.
+pub const DEFAULT_IGNORED_ZOMBIE_PARENTS: &[&str] = &["opencode", "claude", "codex", "node"];
 
 // ── Auto-Shutdown ─────────────────────────────────────────────────
 /// Default schedule start hour (24h format) — shutdown only active during this window.

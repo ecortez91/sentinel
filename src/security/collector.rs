@@ -218,6 +218,73 @@ pub fn count_auth_events_24h() -> (usize, bool) {
     (count, true)
 }
 
+/// Parse individual auth events from /var/log/auth.log for the timeline.
+///
+/// Returns up to `MAX_AUTH_EVENTS` most recent interesting auth events.
+/// Best-effort: returns empty vec if the file is unreadable.
+pub fn collect_auth_events() -> Vec<SecurityEvent> {
+    use crate::constants::MAX_AUTH_EVENTS;
+
+    let path = std::path::Path::new("/var/log/auth.log");
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+
+    let reader = std::io::BufReader::new(file);
+    let mut events = Vec::new();
+
+    for line in reader.lines().take(10_000).flatten() {
+        let (severity, message) = if line.contains("Failed password") {
+            let msg = extract_auth_detail(&line, "Failed password");
+            (AlertSeverity::Warning, format!("Failed login: {}", msg))
+        } else if line.contains("authentication failure") {
+            let msg = extract_auth_detail(&line, "authentication failure");
+            (AlertSeverity::Warning, format!("Auth failure: {}", msg))
+        } else if line.contains("Accepted password") || line.contains("Accepted publickey") {
+            let msg = extract_auth_detail(&line, "Accepted");
+            (AlertSeverity::Info, format!("Login accepted: {}", msg))
+        } else if line.contains("sudo:") {
+            let msg = extract_sudo_detail(&line);
+            (AlertSeverity::Info, format!("sudo: {}", msg))
+        } else {
+            continue;
+        };
+
+        events.push(SecurityEvent {
+            timestamp: Local::now(), // approximate — syslog dates not parsed
+            kind: SecurityEventKind::AuthEvent,
+            severity,
+            message,
+            pid: None,
+        });
+    }
+
+    // Keep only the most recent entries (last N from the file = newest)
+    if events.len() > MAX_AUTH_EVENTS {
+        events.drain(..events.len() - MAX_AUTH_EVENTS);
+    }
+    events
+}
+
+/// Extract meaningful detail from a "Failed password" or "Accepted" auth.log line.
+fn extract_auth_detail(line: &str, keyword: &str) -> String {
+    if let Some(pos) = line.find(keyword) {
+        line[pos..].chars().take(80).collect()
+    } else {
+        line.chars().take(80).collect()
+    }
+}
+
+/// Extract meaningful detail from a sudo line.
+fn extract_sudo_detail(line: &str) -> String {
+    if let Some(pos) = line.find("sudo:") {
+        line[pos + 5..].trim().chars().take(80).collect()
+    } else {
+        line.chars().take(80).collect()
+    }
+}
+
 // ── Logged-in users ──────────────────────────────────────────────
 
 /// Get the list of currently logged-in users.
@@ -339,6 +406,13 @@ pub fn refresh_security_state(
     state.listeners = collect_listeners(store);
     state.connections = collect_connections(store);
     state.events = collect_security_events(store, alerts);
+
+    // Merge auth events into the timeline
+    let auth_events = collect_auth_events();
+    state.events.extend(auth_events);
+    state.events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    state.events.truncate(MAX_SECURITY_EVENTS);
+
     state.logged_in_users = collect_logged_in_users();
 
     // Compute threat counters from alerts
@@ -503,5 +577,31 @@ mod tests {
         } else {
             assert_eq!(count, 0);
         }
+    }
+
+    #[test]
+    fn collect_auth_events_returns_bounded_vec() {
+        // Best-effort: may be empty on systems without auth.log
+        let events = collect_auth_events();
+        assert!(events.len() <= MAX_AUTH_EVENTS);
+        for ev in &events {
+            assert_eq!(ev.kind, SecurityEventKind::AuthEvent);
+        }
+    }
+
+    #[test]
+    fn extract_auth_detail_truncates() {
+        let line =
+            "Jan  1 00:00:00 host sshd[123]: Failed password for root from 10.0.0.1 port 22 ssh2";
+        let detail = extract_auth_detail(line, "Failed password");
+        assert!(detail.starts_with("Failed password"));
+        assert!(detail.len() <= 80);
+    }
+
+    #[test]
+    fn extract_sudo_detail_extracts_command() {
+        let line = "Jan  1 00:00:00 host sudo: user : TTY=pts/0 ; PWD=/home ; COMMAND=/usr/bin/apt";
+        let detail = extract_sudo_detail(line);
+        assert!(detail.contains("user"));
     }
 }

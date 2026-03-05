@@ -150,6 +150,7 @@ impl DiagnosticEngine {
     pub fn resource_contention(
         system: &SystemSnapshot,
         processes: &[ProcessInfo],
+        ignored_zombie_parents: &[String],
     ) -> DiagnosticReport {
         let mut report = DiagnosticReport::new("Resource Contention Analysis");
 
@@ -296,16 +297,42 @@ impl DiagnosticEngine {
             );
         }
 
-        // Zombie processes
+        // Zombie processes (filtered by parent ignore list)
+        let pid_names: std::collections::HashMap<u32, &str> =
+            processes.iter().map(|p| (p.pid, p.name.as_str())).collect();
         let zombies: Vec<&ProcessInfo> = processes
             .iter()
-            .filter(|p| p.status == crate::models::ProcessStatus::Zombie)
+            .filter(|p| {
+                if p.status != crate::models::ProcessStatus::Zombie {
+                    return false;
+                }
+                // Exclude zombies whose parent is in the ignore list
+                if let Some(ppid) = p.parent_pid {
+                    if let Some(parent_name) = pid_names.get(&ppid) {
+                        let parent_lower = parent_name.to_lowercase();
+                        if ignored_zombie_parents
+                            .iter()
+                            .any(|pat| parent_lower.contains(&pat.to_lowercase()))
+                        {
+                            return false;
+                        }
+                    }
+                }
+                true
+            })
             .collect();
         if !zombies.is_empty() {
             let names: Vec<String> = zombies
                 .iter()
                 .take(5)
-                .map(|z| format!("{} (PID {})", z.name, z.pid))
+                .map(|z| {
+                    let parent = z
+                        .parent_pid
+                        .and_then(|ppid| pid_names.get(&ppid))
+                        .map(|pn| format!(" [parent: {}]", pn))
+                        .unwrap_or_default();
+                    format!("{} (PID {}){}", z.name, z.pid, parent)
+                })
                 .collect();
             report.push(
                 FindingSeverity::Warning,
@@ -877,11 +904,12 @@ impl DiagnosticEngine {
         processes: &[ProcessInfo],
         _alerts: &[Alert],
         store: &EventStore,
+        ignored_zombie_parents: &[String],
     ) -> String {
         let mut sections = Vec::new();
 
         // Resource contention (always run)
-        let contention = Self::resource_contention(system, processes);
+        let contention = Self::resource_contention(system, processes, ignored_zombie_parents);
         if contention.max_severity().unwrap_or(FindingSeverity::Info) >= FindingSeverity::Warning {
             sections.push(contention.to_text());
         }
@@ -1080,7 +1108,7 @@ mod tests {
     fn contention_healthy_system() {
         let sys = make_system(20.0, 4_000_000_000, 16_000_000_000);
         let procs = vec![make_process(1, "idle", 1.0, 1024)];
-        let report = DiagnosticEngine::resource_contention(&sys, &procs);
+        let report = DiagnosticEngine::resource_contention(&sys, &procs, &[]);
         assert_eq!(report.max_severity(), Some(FindingSeverity::Info));
         assert!(report.to_text().contains("healthy"));
     }
@@ -1092,7 +1120,7 @@ mod tests {
             make_process(1, "hog", 92.0, 1024),
             make_process(2, "idle", 1.0, 1024),
         ];
-        let report = DiagnosticEngine::resource_contention(&sys, &procs);
+        let report = DiagnosticEngine::resource_contention(&sys, &procs, &[]);
         assert_eq!(report.max_severity(), Some(FindingSeverity::Critical));
     }
 
@@ -1102,7 +1130,7 @@ mod tests {
         let used = 15_000_000_000u64; // ~94%
         let sys = make_system(20.0, used, total);
         let procs = vec![make_process(1, "big", 5.0, 12_000_000_000)];
-        let report = DiagnosticEngine::resource_contention(&sys, &procs);
+        let report = DiagnosticEngine::resource_contention(&sys, &procs, &[]);
         assert!(report.max_severity().unwrap() >= FindingSeverity::Warning);
     }
 
@@ -1112,8 +1140,25 @@ mod tests {
         let mut zombie = make_process(42, "defunct", 0.0, 0);
         zombie.status = ProcessStatus::Zombie;
         let procs = vec![zombie];
-        let report = DiagnosticEngine::resource_contention(&sys, &procs);
+        let report = DiagnosticEngine::resource_contention(&sys, &procs, &[]);
         assert!(report.to_text().contains("zombie"));
+    }
+
+    #[test]
+    fn contention_ignores_zombie_with_ignored_parent() {
+        let sys = make_system(20.0, 4_000_000_000, 16_000_000_000);
+        let mut parent = make_process(100, "opencode", 5.0, 1024);
+        parent.parent_pid = None;
+        let mut zombie = make_process(200, "sh", 0.0, 0);
+        zombie.status = ProcessStatus::Zombie;
+        zombie.parent_pid = Some(100);
+        let procs = vec![parent, zombie];
+        let ignore = vec!["opencode".to_string()];
+        let report = DiagnosticEngine::resource_contention(&sys, &procs, &ignore);
+        assert!(
+            !report.to_text().contains("zombie"),
+            "Zombie with ignored parent should not appear in contention report"
+        );
     }
 
     // ── Timeline report ───────────────────────────────────────────
