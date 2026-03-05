@@ -1134,6 +1134,33 @@ impl App {
                 self.send_sigkill();
             }
 
+            // Scrolling (Security tab handles its own scrolling)
+            KeyCode::Up | KeyCode::Char('k') if self.state.active_tab == Tab::Security => {
+                self.security_scroll_up();
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.state.active_tab == Tab::Security => {
+                self.security_scroll_down();
+            }
+            KeyCode::Enter if self.state.active_tab == Tab::Security => {
+                self.security_enter();
+            }
+            KeyCode::Esc if self.state.active_tab == Tab::Security => {
+                self.state.security.detail_popup = false;
+            }
+            // Tab/l = next panel, h = prev panel in Security tab
+            KeyCode::Char('l') if self.state.active_tab == Tab::Security => {
+                let next = self.state.security.focused_panel.next();
+                self.state.security.focus_panel(next);
+            }
+            KeyCode::Char('h') if self.state.active_tab == Tab::Security => {
+                let prev = self.state.security.focused_panel.prev();
+                self.state.security.focus_panel(prev);
+            }
+            KeyCode::Char('r') if self.state.active_tab == Tab::Security => {
+                self.tick_security();
+                self.state.set_status("Security data refreshed".into());
+            }
+
             // Scrolling
             KeyCode::Up | KeyCode::Char('k') => self.state.scroll_up(),
             KeyCode::Down | KeyCode::Char('j') => self.state.scroll_down(),
@@ -2214,6 +2241,11 @@ impl App {
                     snap.containers = self.state.containers.clone();
                 }
             }
+
+            // Refresh security dashboard (every SECURITY_REFRESH_TICKS)
+            if self.state.tick_count % SECURITY_REFRESH_TICKS == 0 {
+                self.tick_security();
+            }
         } else {
             self.state.tick_count += 1;
         }
@@ -2372,6 +2404,51 @@ impl App {
         }
     }
 
+    /// Refresh the security dashboard state.
+    fn tick_security(&mut self) {
+        let slow_ops = self.state.security.slow_refresh_count
+            % SECURITY_SLOW_REFRESH_CYCLES
+            == 0;
+
+        if let Some(ref store) = self.event_store {
+            crate::security::collector::refresh_security_state(
+                &mut self.state.security,
+                store,
+                &self.state.alerts,
+                slow_ops,
+            );
+        }
+        self.state.security.slow_refresh_count += 1;
+
+        // Score alert: fire when score drops below threshold
+        let score = self.state.security.score;
+        let prev = self.state.security.prev_score;
+        if score < SECURITY_SCORE_ALERT_THRESHOLD && prev >= SECURITY_SCORE_ALERT_THRESHOLD {
+            let label = crate::security::state::score_label(score);
+            let alert = crate::models::Alert::new(
+                if score < 40 {
+                    crate::models::AlertSeverity::Critical
+                } else {
+                    crate::models::AlertSeverity::Warning
+                },
+                crate::models::AlertCategory::SecurityScore,
+                "security",
+                0,
+                format!("Security score dropped to {}/100 ({})", score, label),
+                score as f64,
+                SECURITY_SCORE_ALERT_THRESHOLD as f64,
+            );
+
+            // Send to Telegram
+            if let Some(ref mut tg) = self.telegram_notifier {
+                tg.send_alert(&alert, &gethostname());
+            }
+
+            // Add to alerts
+            self.state.alerts.insert(0, alert);
+        }
+    }
+
     /// Send a thermal notification via Telegram in the background.
     fn send_thermal_telegram(&mut self, event: &NotifyEvent, temp: f32, hostname: &str) {
         if let Some(ref mut tg) = self.telegram_notifier {
@@ -2443,6 +2520,51 @@ impl App {
                     let _ = temp_notifier.notify(event, &body).await;
                 });
             }
+        }
+    }
+
+    // ── Security tab key handlers ─────────────────────────────
+
+    /// Scroll up in the focused security panel.
+    fn security_scroll_up(&mut self) {
+        let sec = &mut self.state.security;
+        if sec.selected_index > 0 {
+            sec.selected_index -= 1;
+            // Keep scroll offset in view (visible window adjustment)
+            let scroll = sec.focused_scroll();
+            if sec.selected_index < scroll {
+                sec.set_focused_scroll(sec.selected_index);
+            }
+        }
+    }
+
+    /// Scroll down in the focused security panel.
+    fn security_scroll_down(&mut self) {
+        let sec = &mut self.state.security;
+        let count = sec.focused_item_count();
+        if count > 0 && sec.selected_index < count.saturating_sub(1) {
+            sec.selected_index += 1;
+            // Keep scroll offset in view — assume ~10 visible rows
+            let scroll = sec.focused_scroll();
+            let visible_rows = 10;
+            if sec.selected_index >= scroll + visible_rows {
+                sec.set_focused_scroll(sec.selected_index.saturating_sub(visible_rows - 1));
+            }
+        }
+    }
+
+    /// Toggle detail popup for Listeners / Connections panel.
+    fn security_enter(&mut self) {
+        let panel = self.state.security.focused_panel;
+        match panel {
+            crate::security::state::SecurityPanel::Listeners
+            | crate::security::state::SecurityPanel::Connections => {
+                let count = self.state.security.focused_item_count();
+                if count > 0 {
+                    self.state.security.detail_popup = !self.state.security.detail_popup;
+                }
+            }
+            _ => {} // No detail popup for other panels
         }
     }
 }

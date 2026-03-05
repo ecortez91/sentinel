@@ -358,6 +358,9 @@ pub struct AppState {
     // ── Event ticker (recent events from store for dashboard) ──
     pub recent_events: Vec<String>,
 
+    // ── Security dashboard ────────────────────────────────────
+    pub security: crate::security::state::SecurityState,
+
     // ── Command AI (natural language fallback) ──────────────
     /// When true, we're waiting for an AI response to a command palette query.
     pub command_ai_loading: bool,
@@ -462,6 +465,8 @@ impl AppState {
             shutdown_manager,
             // Event ticker
             recent_events: Vec::new(),
+            // Security dashboard
+            security: crate::security::state::SecurityState::default(),
             // Command AI
             command_ai_loading: false,
             // Command palette

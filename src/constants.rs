@@ -149,6 +149,46 @@ pub const TELEGRAM_API_BASE: &str = "https://api.telegram.org";
 /// Minimum interval between Telegram messages per (category, PID) pair (seconds).
 pub const TELEGRAM_RATE_LIMIT_SECS: u64 = 300;
 
+// ── Security Dashboard ────────────────────────────────────────────
+/// Security data refresh interval (ticks). At 1s/tick this is ~5s.
+pub const SECURITY_REFRESH_TICKS: u64 = 5;
+/// Slow operations (dpkg --verify) refresh interval in security refresh cycles.
+/// At 5s per cycle, 12 cycles = ~60s.
+pub const SECURITY_SLOW_REFRESH_CYCLES: u64 = 12;
+/// Maximum security events retained in the timeline.
+pub const MAX_SECURITY_EVENTS: usize = 200;
+/// Maximum connections shown.
+pub const MAX_SECURITY_CONNECTIONS: usize = 100;
+/// Security score threshold for "FAIR" — alert when dropping below this.
+pub const SECURITY_SCORE_ALERT_THRESHOLD: u8 = 60;
+/// Score penalty weights.
+pub const SCORE_PENALTY_THREAT: u8 = 20;
+pub const SCORE_PENALTY_SUSPICIOUS: u8 = 10;
+pub const SCORE_PENALTY_UNOWNED_LISTENER: u8 = 5;
+pub const SCORE_PENALTY_RISKY_PORT: u8 = 5;
+pub const SCORE_PENALTY_NO_AUTH_LOG: u8 = 3;
+pub const SCORE_PENALTY_MODIFIED_PKG: u8 = 2;
+
+/// Known standard ports and their expected services.
+/// Format: (port, expected_process_substring).
+pub const KNOWN_PORTS: &[(u16, &str)] = &[
+    (22, "ssh"),
+    (53, "systemd-resolve"),
+    (80, "nginx"),
+    (443, "nginx"),
+    (3000, "node"),
+    (3306, "mysql"),
+    (3307, "mysql"),
+    (4000, "node"),
+    (5432, "postgres"),
+    (5050, ""), // generic — accept any known process
+    (6379, "redis"),
+    (8080, ""), // generic HTTP — accept any
+    (8443, ""), // generic HTTPS — accept any
+    (9090, ""), // generic monitoring
+    (27017, "mongod"),
+];
+
 // ── Auto-Shutdown ─────────────────────────────────────────────────
 /// Default schedule start hour (24h format) — shutdown only active during this window.
 pub const DEFAULT_SHUTDOWN_SCHEDULE_START: u8 = 0;

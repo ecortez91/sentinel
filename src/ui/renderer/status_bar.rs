@@ -96,10 +96,16 @@ pub fn render_status_bar_with_plugins(
             spans.push(dim(" Abort shutdown "));
         }
         Tab::Security => {
-            spans.push(badge(":", t.accent_secondary));
-            spans.push(dim(" listeners "));
-            spans.push(badge(":", t.accent_secondary));
-            spans.push(dim(" port <n> "));
+            spans.push(badge("↑↓", t.accent_secondary));
+            spans.push(dim(" Scroll "));
+            spans.push(badge("l/h", t.accent_secondary));
+            spans.push(dim(" Panel "));
+            spans.push(badge("Enter", t.accent_secondary));
+            spans.push(dim(" Detail "));
+            spans.push(badge("r", t.accent_secondary));
+            spans.push(dim(" Refresh "));
+            spans.push(badge("Esc", t.accent_secondary));
+            spans.push(dim(" Close "));
         }
         Tab::Plugin(i) => {
             // Show plugin-specific hints from the plugin trait

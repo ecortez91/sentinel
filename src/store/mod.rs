@@ -570,6 +570,33 @@ impl EventStore {
         rows.collect()
     }
 
+    /// Query current established connections (most recent snapshot).
+    pub fn query_current_connections(&self) -> SqlResult<Vec<SocketRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ts, pid, name, protocol, local_addr, local_port, remote_addr, remote_port, state
+             FROM network_sockets
+             WHERE state = 'ESTABLISHED' AND ts = (SELECT MAX(ts) FROM network_sockets)
+             ORDER BY local_port ASC
+             LIMIT 100",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(SocketRow {
+                ts: row.get(0)?,
+                pid: row.get(1)?,
+                name: row.get(2)?,
+                protocol: row.get(3)?,
+                local_addr: row.get(4)?,
+                local_port: row.get(5)?,
+                remote_addr: row.get(6)?,
+                remote_port: row.get(7)?,
+                state: row.get(8)?,
+            })
+        })?;
+
+        rows.collect()
+    }
+
     /// Query current listeners (most recent snapshot, LISTEN state only).
     pub fn query_current_listeners(&self) -> SqlResult<Vec<SocketRow>> {
         let mut stmt = self.conn.prepare(
