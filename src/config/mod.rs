@@ -119,17 +119,29 @@ impl Default for MarketConfig {
     }
 }
 
-/// Email notification settings.
+/// Notification settings (email + Telegram).
 #[derive(Debug, Clone)]
 pub struct NotificationConfig {
     /// Whether email notifications are enabled (still requires .env SMTP credentials).
     pub email_enabled: bool,
+    /// Whether Telegram notifications are enabled.
+    pub telegram_enabled: bool,
+    /// Telegram Bot API token (from @BotFather).
+    pub telegram_bot_token: Option<String>,
+    /// Telegram chat ID to send alerts to.
+    pub telegram_chat_id: Option<String>,
+    /// Minimum severity for Telegram alerts: "warning", "critical", or "danger".
+    pub telegram_min_severity: String,
 }
 
 impl Default for NotificationConfig {
     fn default() -> Self {
         Self {
             email_enabled: true,
+            telegram_enabled: false,
+            telegram_bot_token: None,
+            telegram_chat_id: None,
+            telegram_min_severity: "warning".to_string(),
         }
     }
 }
@@ -226,6 +238,10 @@ pub(crate) struct FileThermalConfig {
 #[serde(default)]
 pub(crate) struct FileNotificationConfig {
     pub(crate) email_enabled: Option<bool>,
+    pub(crate) telegram_enabled: Option<bool>,
+    pub(crate) telegram_bot_token: Option<String>,
+    pub(crate) telegram_chat_id: Option<String>,
+    pub(crate) telegram_min_severity: Option<String>,
 }
 
 /// TOML-deserializable market config section.
@@ -360,6 +376,18 @@ impl Config {
             if let Some(v) = n.email_enabled {
                 config.notifications.email_enabled = v;
             }
+            if let Some(v) = n.telegram_enabled {
+                config.notifications.telegram_enabled = v;
+            }
+            if let Some(v) = n.telegram_bot_token {
+                config.notifications.telegram_bot_token = Some(v);
+            }
+            if let Some(v) = n.telegram_chat_id {
+                config.notifications.telegram_chat_id = Some(v);
+            }
+            if let Some(v) = n.telegram_min_severity {
+                config.notifications.telegram_min_severity = v;
+            }
         }
 
         // Merge market config
@@ -473,6 +501,12 @@ struct WriteThermalConfig {
 #[derive(Debug, Serialize)]
 struct WriteNotificationConfig {
     email_enabled: bool,
+    telegram_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    telegram_bot_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    telegram_chat_id: Option<String>,
+    telegram_min_severity: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -529,6 +563,10 @@ impl From<&NotificationConfig> for WriteNotificationConfig {
     fn from(n: &NotificationConfig) -> Self {
         Self {
             email_enabled: n.email_enabled,
+            telegram_enabled: n.telegram_enabled,
+            telegram_bot_token: n.telegram_bot_token.clone(),
+            telegram_chat_id: n.telegram_chat_id.clone(),
+            telegram_min_severity: n.telegram_min_severity.clone(),
         }
     }
 }

@@ -1,11 +1,21 @@
-//! Email notification system for Sentinel alerts.
+//! Notification system for Sentinel alerts.
 //!
+//! ## Email
 //! Uses lettre with Gmail SMTP (STARTTLS on port 587, rustls).
 //! Credentials are loaded from `~/.config/sentinel/.env` via dotenvy.
 //! Rate-limited: max 1 email per event type per 5 minutes.
 //!
+//! ## Telegram
+//! Uses the Telegram Bot API via `reqwest` HTTP POST.
+//! Credentials are stored in `config.toml` (editable via Settings TUI).
+//! Rate-limited: max 1 message per (category, PID) per 5 minutes.
+//! Severity-filtered via `telegram_min_severity` config.
+//!
 //! IMPORTANT: Credentials (SMTP user, password, recipient) are ONLY
 //! stored in the .env file and NEVER committed to source control.
+//! Telegram bot tokens are stored in config.toml (outside the git repo).
+
+pub mod telegram;
 
 use std::collections::HashMap;
 use std::time::Instant;

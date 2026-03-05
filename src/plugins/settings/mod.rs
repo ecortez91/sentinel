@@ -396,13 +396,63 @@ impl SettingsPlugin {
             ),
             (
                 SettingsCategory::Notifications,
-                vec![SettingItem {
-                    key: "notifications.email_enabled".into(),
-                    label: "Email Enabled".into(),
-                    value: format!("{}", config.notifications.email_enabled),
-                    description: "Enable email notifications (requires .env credentials)".into(),
-                    kind: SettingKind::Toggle,
-                }],
+                vec![
+                    SettingItem {
+                        key: "notifications.email_enabled".into(),
+                        label: "Email Enabled".into(),
+                        value: format!("{}", config.notifications.email_enabled),
+                        description: "Enable email notifications (requires .env credentials)"
+                            .into(),
+                        kind: SettingKind::Toggle,
+                    },
+                    SettingItem {
+                        key: "notifications.telegram_enabled".into(),
+                        label: "Telegram Enabled".into(),
+                        value: format!("{}", config.notifications.telegram_enabled),
+                        description: "Enable Telegram alert notifications".into(),
+                        kind: SettingKind::Toggle,
+                    },
+                    SettingItem {
+                        key: "notifications.telegram_bot_token".into(),
+                        label: "Bot Token".into(),
+                        value: config
+                            .notifications
+                            .telegram_bot_token
+                            .clone()
+                            .unwrap_or_default(),
+                        description: "Telegram bot token from @BotFather".into(),
+                        kind: SettingKind::Text {
+                            max_length: 100,
+                            masked: true,
+                        },
+                    },
+                    SettingItem {
+                        key: "notifications.telegram_chat_id".into(),
+                        label: "Chat ID".into(),
+                        value: config
+                            .notifications
+                            .telegram_chat_id
+                            .clone()
+                            .unwrap_or_default(),
+                        description: "Telegram chat ID to send alerts to".into(),
+                        kind: SettingKind::Text {
+                            max_length: 50,
+                            masked: false,
+                        },
+                    },
+                    SettingItem {
+                        key: "notifications.telegram_min_severity".into(),
+                        label: "Min Severity".into(),
+                        value: config.notifications.telegram_min_severity.clone(),
+                        description: "Minimum alert severity to send via Telegram".into(),
+                        kind: SettingKind::Cycle(
+                            vec!["warning", "critical", "danger"]
+                                .into_iter()
+                                .map(String::from)
+                                .collect(),
+                        ),
+                    },
+                ],
             ),
         ]
     }
@@ -700,6 +750,30 @@ impl SettingsPlugin {
             // ── Notifications ────────────────────────────────────
             "notifications.email_enabled" => {
                 config.notifications.email_enabled = value == "true";
+                true
+            }
+            "notifications.telegram_enabled" => {
+                config.notifications.telegram_enabled = value == "true";
+                true
+            }
+            "notifications.telegram_bot_token" => {
+                config.notifications.telegram_bot_token = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                };
+                true
+            }
+            "notifications.telegram_chat_id" => {
+                config.notifications.telegram_chat_id = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.to_string())
+                };
+                true
+            }
+            "notifications.telegram_min_severity" => {
+                config.notifications.telegram_min_severity = value.to_string();
                 true
             }
             _ => false,

@@ -26,6 +26,7 @@ use crate::config::Config;
 use crate::constants::*;
 use crate::diagnostics::{DiagnosticEngine, SuggestedAction};
 use crate::notifications::{self, EmailNotifier, NotifyEvent};
+use crate::notifications::telegram::TelegramNotifier;
 use crate::plugins::market::MarketPlugin;
 use crate::plugins::registry::PluginRegistry;
 use crate::plugins::settings::SettingsPlugin;
@@ -125,6 +126,9 @@ pub struct App {
     // Email notifications
     email_notifier: Option<EmailNotifier>,
 
+    // Telegram notifications
+    telegram_notifier: Option<TelegramNotifier>,
+
     // Plugin system
     plugins: PluginRegistry,
     /// AI channel for plugin-initiated AI analysis requests.
@@ -191,6 +195,13 @@ impl App {
         // Initialize email notifier (requires .env SMTP credentials)
         let email_notifier = if config.notifications.email_enabled {
             EmailNotifier::from_env()
+        } else {
+            None
+        };
+
+        // Initialize Telegram notifier (requires bot token + chat ID in config)
+        let telegram_notifier = if config.notifications.telegram_enabled {
+            TelegramNotifier::from_config(&config.notifications)
         } else {
             None
         };
@@ -335,6 +346,7 @@ impl App {
             net_scan_interval: 10, // scan network sockets every ~10 ticks
             thermal_rx,
             email_notifier,
+            telegram_notifier,
             plugins,
             plugin_ai_tx,
             plugin_ai_rx,
@@ -1962,6 +1974,43 @@ impl App {
                 }
             }
 
+            // Telegram test
+            "telegram-test" | "test-telegram" | "tg-test" => {
+                if self.telegram_notifier.is_some() {
+                    // Clone config for the async task
+                    let notifier_config = self.config.notifications.clone();
+                    tokio::spawn(async move {
+                        if let Some(tg) = TelegramNotifier::from_config(&notifier_config) {
+                            match tg.send_test().await {
+                                Ok(()) => eprintln!("Telegram test message sent successfully"),
+                                Err(e) => eprintln!("Telegram test failed: {}", e),
+                            }
+                        }
+                    });
+                    CommandResult::text_only(
+                        "# Telegram Test\n\n\
+                         Sending test message...\n\n\
+                         Check your Telegram chat."
+                            .to_string(),
+                    )
+                } else {
+                    CommandResult::text_only(
+                        "# Telegram Test\n\n\
+                         Telegram notifications are not configured.\n\n\
+                         Go to Settings > Notifications and set:\n\
+                         - Telegram Enabled: ON\n\
+                         - Bot Token: (from @BotFather)\n\
+                         - Chat ID: (your chat or group ID)\n\n\
+                         Or add to ~/.config/sentinel/config.toml:\n\
+                         [notifications]\n\
+                         telegram_enabled = true\n\
+                         telegram_bot_token = \"your_token\"\n\
+                         telegram_chat_id = \"your_chat_id\""
+                            .to_string(),
+                    )
+                }
+            }
+
             // Help
             "help" | "?" | "commands" => CommandResult::text_only(
                  "# Command Palette\n\n\
@@ -1972,7 +2021,8 @@ impl App {
                  \x20 timeline [minutes] - What happened recently\n\n\
                  Thermal:\n\
                  \x20 thermal            - Current thermal snapshot (LHM)\n\
-                 \x20 email-test         - Send a test notification email\n\n\
+                 \x20 email-test         - Send a test notification email\n\
+                 \x20 telegram-test      - Send a test Telegram message\n\n\
                  Network:\n\
                  \x20 port <number>      - Who's using this port?\n\
                  \x20 listeners          - All active port listeners\n\n\
@@ -2140,6 +2190,14 @@ impl App {
                 }
             }
 
+            // Send alerts to Telegram (severity-filtered + rate-limited)
+            if let Some(ref mut tg) = self.telegram_notifier {
+                let hostname = gethostname();
+                for alert in &new_alerts {
+                    tg.send_alert(alert, &hostname);
+                }
+            }
+
             self.state.update(system, processes, new_alerts);
 
             // Sync plugin favorites to SQLite (every ~10 refresh cycles)
@@ -2226,6 +2284,22 @@ impl App {
             }
         }
 
+        // Hot-reload Telegram notifier
+        self.telegram_notifier = if new_config.notifications.telegram_enabled {
+            TelegramNotifier::from_config(&new_config.notifications)
+        } else {
+            None
+        };
+
+        // Hot-reload email notifier
+        if new_config.notifications.email_enabled != self.config.notifications.email_enabled {
+            self.email_notifier = if new_config.notifications.email_enabled {
+                EmailNotifier::from_env()
+            } else {
+                None
+            };
+        }
+
         // Persist to disk
         self.config = new_config;
         if let Err(e) = self.config.save() {
@@ -2298,8 +2372,53 @@ impl App {
         }
     }
 
+    /// Send a thermal notification via Telegram in the background.
+    fn send_thermal_telegram(&mut self, event: &NotifyEvent, temp: f32, hostname: &str) {
+        if let Some(ref mut tg) = self.telegram_notifier {
+            use crate::models::{AlertCategory, AlertSeverity};
+
+            let (severity, category, message) = match event {
+                NotifyEvent::ThermalCritical => (
+                    AlertSeverity::Critical,
+                    AlertCategory::ThermalCritical,
+                    format!("Temperature threshold exceeded: {:.1}\u{b0}C", temp),
+                ),
+                NotifyEvent::ShutdownImminent => (
+                    AlertSeverity::Danger,
+                    AlertCategory::ThermalEmergency,
+                    format!("Auto-shutdown imminent! {:.1}\u{b0}C sustained", temp),
+                ),
+                NotifyEvent::ThermalEmergency => (
+                    AlertSeverity::Danger,
+                    AlertCategory::ThermalEmergency,
+                    format!("EMERGENCY: Executing shutdown at {:.1}\u{b0}C", temp),
+                ),
+                NotifyEvent::Recovered => (
+                    AlertSeverity::Info,
+                    AlertCategory::ThermalWarning,
+                    format!("Temperature recovered to {:.1}\u{b0}C", temp),
+                ),
+                NotifyEvent::Test => return,
+            };
+
+            let alert = crate::models::Alert::new(
+                severity,
+                category,
+                "thermal",
+                0,
+                message,
+                temp as f64,
+                0.0,
+            );
+            tg.send_alert(&alert, hostname);
+        }
+    }
+
     /// Send a thermal email notification in the background.
     fn send_thermal_email(&mut self, event: NotifyEvent, temp: f32, hostname: &str) {
+        // Also notify via Telegram
+        self.send_thermal_telegram(&event, temp, hostname);
+
         if let Some(ref mut notifier) = self.email_notifier {
             let sensor = self.state.thermal.as_ref()
                 .map(|t| {

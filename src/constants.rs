@@ -143,6 +143,12 @@ pub const DEFAULT_SMTP_PORT: u16 = 587;
 /// Default SMTP server.
 pub const DEFAULT_SMTP_SERVER: &str = "smtp.gmail.com";
 
+// ── Telegram Notifications ────────────────────────────────────────
+/// Telegram Bot API base URL.
+pub const TELEGRAM_API_BASE: &str = "https://api.telegram.org";
+/// Minimum interval between Telegram messages per (category, PID) pair (seconds).
+pub const TELEGRAM_RATE_LIMIT_SECS: u64 = 300;
+
 // ── Auto-Shutdown ─────────────────────────────────────────────────
 /// Default schedule start hour (24h format) — shutdown only active during this window.
 pub const DEFAULT_SHUTDOWN_SCHEDULE_START: u8 = 0;

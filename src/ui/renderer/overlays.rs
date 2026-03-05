@@ -325,6 +325,11 @@ pub fn render_help_overlay_with_plugins(
         entry("listeners", "Active port listeners", t.accent_secondary),
         entry("thermal", "Current thermal snapshot", t.accent_secondary),
         entry("email-test", "Send test notification", t.accent_secondary),
+        entry(
+            "telegram-test",
+            "Send test Telegram msg",
+            t.accent_secondary,
+        ),
         entry("config", "Show configuration", t.accent_secondary),
         entry("stats", "Event store statistics", t.accent_secondary),
         entry("<any text>", "Ask AI (natural language)", t.ai_accent),
