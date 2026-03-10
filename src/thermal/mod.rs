@@ -42,12 +42,16 @@ pub struct ThermalSnapshot {
     pub fan_rpms: Vec<SensorReading>,
     /// Motherboard / chipset temperatures.
     pub motherboard_temps: Vec<SensorReading>,
+    /// RAM / DIMM module temperatures (#14).
+    pub ram_temps: Vec<SensorReading>,
     /// Maximum temperature across all sensors (for alert checking).
     pub max_temp: f32,
     /// Maximum CPU temperature (package or highest core).
     pub max_cpu_temp: f32,
     /// Maximum GPU temperature (temp or hotspot).
     pub max_gpu_temp: f32,
+    /// Maximum RAM temperature.
+    pub max_ram_temp: f32,
 }
 
 impl ThermalSnapshot {
@@ -239,9 +243,11 @@ pub fn parse_lhm_json(json_str: &str) -> Option<ThermalSnapshot> {
         ssd_temps: Vec::new(),
         fan_rpms: Vec::new(),
         motherboard_temps: Vec::new(),
+        ram_temps: Vec::new(),
         max_temp: 0.0,
         max_cpu_temp: 0.0,
         max_gpu_temp: 0.0,
+        max_ram_temp: 0.0,
     };
 
     for sensor in &sensors {
@@ -294,6 +300,18 @@ pub fn parse_lhm_json(json_str: &str) -> Option<ThermalSnapshot> {
                     }
                     snapshot.ssd_temps.push(SensorReading {
                         name: format_storage_name(&sensor.hardware_path, &sensor.name),
+                        value: sensor.value,
+                    });
+                } else if is_memory_hardware(&path_str) {
+                    // RAM / DIMM temperatures (#14)
+                    if sensor.value > snapshot.max_temp {
+                        snapshot.max_temp = sensor.value;
+                    }
+                    if sensor.value > snapshot.max_ram_temp {
+                        snapshot.max_ram_temp = sensor.value;
+                    }
+                    snapshot.ram_temps.push(SensorReading {
+                        name: sensor.name.clone(),
                         value: sensor.value,
                     });
                 } else {
@@ -486,6 +504,22 @@ fn is_storage_hardware(path: &str) -> bool {
         || path.contains("hynix")
 }
 
+/// Returns true if the hardware path indicates a RAM/DIMM module.
+/// LHM reports memory module temps via SPD sensors (e.g. "Generic Memory",
+/// "DIMM", "DDR4", "DDR5", "Corsair", "G.Skill").
+fn is_memory_hardware(path: &str) -> bool {
+    path.contains("memory")
+        || path.contains("dimm")
+        || path.contains("ddr4")
+        || path.contains("ddr5")
+        || path.contains("ram")
+        // Common RAM brand names in LHM hardware paths
+        || path.contains("corsair")
+        || path.contains("g.skill")
+        || path.contains("crucial ddr")
+        || path.contains("kingston fury")
+}
+
 /// Format a storage sensor name to include the drive identifier.
 fn format_storage_name(path: &[String], sensor_name: &str) -> String {
     // Find the storage device name in the path
@@ -550,6 +584,15 @@ impl ThermalSnapshot {
         if !self.ssd_temps.is_empty() {
             lines.push("Storage:".to_string());
             for s in &self.ssd_temps {
+                lines.push(format!("  {}: {:.1}°C", s.name, s.value));
+            }
+            lines.push(String::new());
+        }
+
+        // RAM
+        if !self.ram_temps.is_empty() {
+            lines.push("Memory:".to_string());
+            for s in &self.ram_temps {
                 lines.push(format!("  {}: {:.1}°C", s.name, s.value));
             }
             lines.push(String::new());
@@ -1064,7 +1107,8 @@ mod tests {
                     + snap.gpu_hotspot.is_some() as usize
                     + snap.ssd_temps.len()
                     + snap.fan_rpms.len()
-                    + snap.motherboard_temps.len();
+                    + snap.motherboard_temps.len()
+                    + snap.ram_temps.len();
                 assert!(total_sensors > 0, "Should have at least one sensor reading");
 
                 eprintln!("Total sensors: {}", total_sensors);
@@ -1179,5 +1223,90 @@ mod tests {
         // but it's lower than 72 so max_temp stays at 72
         let system = snapshot.motherboard_temps.iter().find(|s| s.name == "System");
         assert!(system.is_some());
+    }
+
+    // ── RAM temperature tests (#14) ──────────────────────────────
+
+    #[test]
+    fn is_memory_hardware_detects_ram() {
+        assert!(is_memory_hardware("generic memory"));
+        assert!(is_memory_hardware("dimm #1"));
+        assert!(is_memory_hardware("corsair vengeance"));
+        assert!(is_memory_hardware("g.skill trident z5"));
+        assert!(is_memory_hardware("ddr5 module"));
+        assert!(is_memory_hardware("ddr4 stick"));
+        assert!(!is_memory_hardware("intel core i7"));
+        assert!(!is_memory_hardware("nvidia geforce"));
+        assert!(!is_memory_hardware("samsung ssd 970"));
+    }
+
+    #[test]
+    fn parse_lhm_json_with_ram_temps() {
+        let json = r#"{
+            "id": 0, "Text": "Sensor", "Min": "", "Max": "", "Value": "", "ImageURL": "",
+            "Children": [
+                {
+                    "id": 1, "Text": "Intel Core i7-12700K", "Min": "", "Max": "", "Value": "", "ImageURL": "images/cpu.png",
+                    "Children": [{
+                        "id": 2, "Text": "Temperatures", "Min": "", "Max": "", "Value": "", "ImageURL": "",
+                        "Children": [
+                            {"id": 3, "Text": "CPU Package: 65.0 °C", "Min": "", "Max": "", "Value": "65.0 °C", "ImageURL": "", "Children": []}
+                        ]
+                    }]
+                },
+                {
+                    "id": 10, "Text": "Generic Memory", "Min": "", "Max": "", "Value": "", "ImageURL": "images/ram.png",
+                    "Children": [{
+                        "id": 11, "Text": "Temperatures", "Min": "", "Max": "", "Value": "", "ImageURL": "",
+                        "Children": [
+                            {"id": 12, "Text": "DIMM #1: 38.0 °C", "Min": "30.0 °C", "Max": "42.0 °C", "Value": "38.0 °C", "ImageURL": "", "Children": []},
+                            {"id": 13, "Text": "DIMM #2: 36.5 °C", "Min": "28.0 °C", "Max": "40.0 °C", "Value": "36.5 °C", "ImageURL": "", "Children": []}
+                        ]
+                    }]
+                }
+            ]
+        }"#;
+        let snapshot = parse_lhm_json(json).expect("Should parse RAM temps");
+
+        // RAM temps should be parsed
+        assert_eq!(snapshot.ram_temps.len(), 2, "Should find 2 DIMM sensors");
+        assert!((snapshot.ram_temps[0].value - 38.0).abs() < 0.01);
+        assert!((snapshot.ram_temps[1].value - 36.5).abs() < 0.01);
+        assert!(snapshot.ram_temps[0].name.contains("DIMM #1"));
+
+        // max_ram_temp should be the highest
+        assert!((snapshot.max_ram_temp - 38.0).abs() < 0.01);
+
+        // RAM temps should contribute to overall max_temp
+        // CPU is 65, so max_temp should be 65 (CPU is higher)
+        assert!((snapshot.max_temp - 65.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn parse_lhm_json_no_ram_temps() {
+        // Standard JSON without RAM — ram_temps should be empty
+        let snapshot = parse_lhm_json(sample_lhm_json()).expect("Should parse");
+        assert!(snapshot.ram_temps.is_empty());
+        assert!((snapshot.max_ram_temp - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn thermal_snapshot_to_text_includes_ram() {
+        let json = r#"{
+            "id": 0, "Text": "Sensor", "Min": "", "Max": "", "Value": "", "ImageURL": "",
+            "Children": [{
+                "id": 10, "Text": "Generic Memory", "Min": "", "Max": "", "Value": "", "ImageURL": "images/ram.png",
+                "Children": [{
+                    "id": 11, "Text": "Temperatures", "Min": "", "Max": "", "Value": "", "ImageURL": "",
+                    "Children": [
+                        {"id": 12, "Text": "DIMM #1: 40.0 °C", "Min": "", "Max": "", "Value": "40.0 °C", "ImageURL": "", "Children": []}
+                    ]
+                }]
+            }]
+        }"#;
+        let snapshot = parse_lhm_json(json).expect("Should parse");
+        let text = snapshot.to_text();
+        assert!(text.contains("Memory:"), "to_text should include Memory section");
+        assert!(text.contains("DIMM #1"));
     }
 }

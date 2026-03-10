@@ -512,9 +512,11 @@ mod tests {
             ssd_temps: Vec::new(),
             fan_rpms: Vec::new(),
             motherboard_temps: Vec::new(),
+            ram_temps: Vec::new(),
             max_temp: cpu_pkg.unwrap_or(0.0).max(gpu.unwrap_or(0.0)),
             max_cpu_temp: cpu_pkg.unwrap_or(0.0),
             max_gpu_temp: gpu.unwrap_or(0.0),
+            max_ram_temp: 0.0,
         }
     }
 

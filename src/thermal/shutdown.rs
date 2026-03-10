@@ -222,11 +222,44 @@ pub enum ShutdownEvent {
     Recovered,
 }
 
-/// Execute the actual system shutdown (WSL: powershell Stop-Computer).
+/// Execute the actual system shutdown.
+///
+/// Cross-platform (#23):
+/// - WSL2: Uses `powershell.exe -Command Stop-Computer -Force` to shut down Windows host.
+/// - Native Linux: Uses `shutdown -h now`.
+/// - macOS: Uses `shutdown -h now`.
+/// - Windows (native): Uses `shutdown /s /f /t 0`.
+///
+/// Falls back to Linux `shutdown` if platform detection fails.
 pub fn execute_shutdown() -> std::io::Result<()> {
-    std::process::Command::new("powershell.exe")
-        .args(["-Command", "Stop-Computer -Force"])
-        .spawn()?;
+    use crate::utils::RuntimePlatform;
+
+    let platform = crate::utils::detect_platform();
+
+    match platform {
+        RuntimePlatform::Wsl2 => {
+            // Shut down the Windows host from WSL2
+            std::process::Command::new("powershell.exe")
+                .args(["-Command", "Stop-Computer -Force"])
+                .spawn()?;
+        }
+        RuntimePlatform::Windows => {
+            std::process::Command::new("shutdown")
+                .args(["/s", "/f", "/t", "0"])
+                .spawn()?;
+        }
+        RuntimePlatform::MacOs => {
+            std::process::Command::new("sudo")
+                .args(["shutdown", "-h", "now"])
+                .spawn()?;
+        }
+        RuntimePlatform::Linux => {
+            std::process::Command::new("sudo")
+                .args(["shutdown", "-h", "now"])
+                .spawn()?;
+        }
+    }
+
     Ok(())
 }
 

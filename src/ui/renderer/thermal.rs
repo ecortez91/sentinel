@@ -76,6 +76,15 @@ pub fn render_thermal_panel(frame: &mut Frame, area: Rect, state: &AppState) {
         }
     }
 
+    // RAM temperatures (#14)
+    if !snap.ram_temps.is_empty() {
+        lines.push(section_header("Memory ", t));
+        for s in snap.ram_temps.iter().take(4) {
+            let label = format!("  {}", s.name);
+            lines.push(make_temp_line(&label, s.value, 20, t, Some(&state.glyphs)));
+        }
+    }
+
     // Motherboard temperatures
     if !snap.motherboard_temps.is_empty() {
         lines.push(section_header("Board ", t));
@@ -145,6 +154,10 @@ pub fn render_thermal_tab(frame: &mut Frame, area: Rect, state: &AppState) {
         // Storage section
         if !snap.ssd_temps.is_empty() {
             constraints.push(Constraint::Length(snap.ssd_temps.len() as u16 + 3));
+        }
+        // RAM section (#14)
+        if !snap.ram_temps.is_empty() {
+            constraints.push(Constraint::Length(snap.ram_temps.len() as u16 + 3));
         }
         // Board section
         if !snap.motherboard_temps.is_empty() {
@@ -277,6 +290,35 @@ pub fn render_thermal_tab(frame: &mut Frame, area: Rect, state: &AppState) {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
+    // RAM section (#14)
+    if !snap.ram_temps.is_empty() {
+        let block = Block::default()
+            .title(Span::styled(
+                " Memory Temperatures ",
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(t.border_style());
+        let inner = block.inner(left_sections[section_idx]);
+        frame.render_widget(block, left_sections[section_idx]);
+        section_idx += 1;
+
+        let lines: Vec<Line> = snap
+            .ram_temps
+            .iter()
+            .map(|s| {
+                make_temp_line(
+                    &format!("  {}", s.name),
+                    s.value,
+                    bar_width,
+                    t,
+                    Some(&state.glyphs),
+                )
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
     // Motherboard section
     if !snap.motherboard_temps.is_empty() {
         let block = Block::default()
@@ -330,12 +372,12 @@ pub fn render_thermal_tab(frame: &mut Frame, area: Rect, state: &AppState) {
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
-    // ── Right column: sparkline + config + shutdown status ────────
+    // ── Right column: sparkline + summary + config + shutdown status ──
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(8),  // Temperature sparkline
-            Constraint::Length(8),  // Max temps summary
+            Constraint::Length(10), // Thermal summary (#21)
             Constraint::Length(10), // Thresholds & config
             Constraint::Min(3),     // Shutdown status
         ])
@@ -344,8 +386,8 @@ pub fn render_thermal_tab(frame: &mut Frame, area: Rect, state: &AppState) {
     // Temperature sparkline
     render_temp_sparkline(frame, right_chunks[0], state);
 
-    // Max temps summary card
-    render_max_temps(frame, right_chunks[1], state);
+    // Thermal summary (#21) — replaces old max temps card with richer info
+    render_thermal_summary(frame, right_chunks[1], state);
 
     // Thresholds / config
     render_thresholds(frame, right_chunks[2], state);
@@ -466,11 +508,11 @@ fn render_temp_sparkline(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(spark, inner);
 }
 
-/// Render max temperature summary card.
-fn render_max_temps(frame: &mut Frame, area: Rect, state: &AppState) {
+/// Render thermal summary card (#21) — peak temps, sensor counts, status.
+fn render_thermal_summary(frame: &mut Frame, area: Rect, state: &AppState) {
     let t = &state.theme;
     let block = Block::default()
-        .title(Span::styled(" Peak Temperatures ", t.header_style()))
+        .title(Span::styled(" Thermal Summary ", t.header_style()))
         .borders(Borders::ALL)
         .border_style(t.border_style());
     let inner = block.inner(area);
@@ -481,14 +523,28 @@ fn render_max_temps(frame: &mut Frame, area: Rect, state: &AppState) {
         None => return,
     };
 
+    let overall_status = if snap.max_temp >= crate::constants::DEFAULT_THERMAL_EMERGENCY_C {
+        ("EMERGENCY", Color::Red)
+    } else if snap.max_temp >= crate::constants::DEFAULT_THERMAL_CRITICAL_C {
+        ("CRITICAL", Color::Rgb(255, 140, 0))
+    } else if snap.max_temp >= crate::constants::DEFAULT_THERMAL_WARNING_C {
+        ("WARNING", Color::Yellow)
+    } else {
+        ("NORMAL", Color::Green)
+    };
+
     let lines = vec![
         Line::from(vec![
-            Span::styled("  Overall Max:  ", Style::default().fg(t.text_dim)),
+            Span::styled("  Status:       ", Style::default().fg(t.text_dim)),
             Span::styled(
-                format!("{:.1}°C", snap.max_temp),
+                overall_status.0,
                 Style::default()
-                    .fg(temp_color(snap.max_temp))
+                    .fg(overall_status.1)
                     .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  (max {:.1}°C)", snap.max_temp),
+                Style::default().fg(temp_color(snap.max_temp)),
             ),
         ]),
         Line::from(vec![
@@ -505,13 +561,28 @@ fn render_max_temps(frame: &mut Frame, area: Rect, state: &AppState) {
                 Style::default().fg(temp_color(snap.max_gpu_temp)),
             ),
         ]),
+        if snap.max_ram_temp > 0.0 {
+            Line::from(vec![
+                Span::styled("  RAM Max:      ", Style::default().fg(t.text_dim)),
+                Span::styled(
+                    format!("{:.1}°C", snap.max_ram_temp),
+                    Style::default().fg(temp_color(snap.max_ram_temp)),
+                ),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("  RAM Max:      ", Style::default().fg(t.text_dim)),
+                Span::styled("--", Style::default().fg(t.text_muted)),
+            ])
+        },
         Line::from(vec![
             Span::styled("  Sensors:      ", Style::default().fg(t.text_dim)),
             Span::styled(
                 format!(
-                    "{} CPU, {} GPU, {} storage, {} fans",
+                    "{} CPU, {} GPU, {} RAM, {} storage, {} fans",
                     snap.cpu_cores.len() + snap.cpu_package.is_some() as usize,
                     snap.gpu_temp.is_some() as usize + snap.gpu_hotspot.is_some() as usize,
+                    snap.ram_temps.len(),
                     snap.ssd_temps.len(),
                     snap.fan_rpms.len(),
                 ),
@@ -521,7 +592,11 @@ fn render_max_temps(frame: &mut Frame, area: Rect, state: &AppState) {
         Line::from(vec![
             Span::styled("  History:      ", Style::default().fg(t.text_dim)),
             Span::styled(
-                format!("{} samples", state.temp_history.len()),
+                format!(
+                    "{}/{} samples",
+                    state.temp_history.len(),
+                    crate::constants::THERMAL_HISTORY_CAPACITY
+                ),
                 Style::default().fg(t.text_primary),
             ),
         ]),
@@ -675,7 +750,7 @@ fn make_temp_line<'a>(
         Some(glyphs) => temp_bar_with_chars(temp, bar_width, glyphs.filled, glyphs.shade_light),
         None => temp_bar(temp, bar_width),
     };
-    let flashing = temp >= 95.0;
+    let flashing = temp >= crate::constants::TEMP_CRITICAL_C;
 
     let mut style = Style::default().fg(color);
     if flashing {
@@ -707,12 +782,14 @@ fn make_fan_line<'a>(name: &str, value: f32, t: &crate::ui::theme::Theme) -> Lin
 }
 
 /// Color gradient for temperature: green -> yellow -> orange -> red.
+/// Uses constants from `crate::constants` for thresholds.
 fn temp_color(temp: f32) -> Color {
-    if temp >= 95.0 {
+    use crate::constants::{TEMP_CRITICAL_C, TEMP_HIGH_C, TEMP_MID_C};
+    if temp >= TEMP_CRITICAL_C {
         Color::Red
-    } else if temp >= 85.0 {
+    } else if temp >= TEMP_HIGH_C {
         Color::Rgb(255, 140, 0) // Orange
-    } else if temp >= 70.0 {
+    } else if temp >= TEMP_MID_C {
         Color::Yellow
     } else {
         Color::Green
