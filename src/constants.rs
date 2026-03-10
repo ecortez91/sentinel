@@ -170,6 +170,26 @@ pub const SCORE_PENALTY_UNOWNED_LISTENER: u8 = 5;
 pub const SCORE_PENALTY_RISKY_PORT: u8 = 5;
 pub const SCORE_PENALTY_NO_AUTH_LOG: u8 = 3;
 pub const SCORE_PENALTY_MODIFIED_PKG: u8 = 2;
+/// Penalty when an active SSH brute-force attempt is detected.
+pub const SCORE_PENALTY_SSH_BRUTE_FORCE: u8 = 15;
+/// Number of failed SSH attempts from a single IP to flag as brute-force.
+pub const SSH_BRUTE_FORCE_THRESHOLD: usize = 5;
+/// Penalty per suspicious outbound connection (capped).
+pub const SCORE_PENALTY_SUSPICIOUS_OUTBOUND: u8 = 5;
+/// Maximum total deduction from suspicious outbound connections.
+pub const SCORE_SUSPICIOUS_OUTBOUND_CAP: u8 = 20;
+/// Maximum cron entries to display.
+pub const MAX_CRON_ENTRIES: usize = 50;
+/// Maximum systemd timers to display.
+pub const MAX_SYSTEMD_TIMERS: usize = 50;
+/// Maximum suspicious outbound connections to track.
+pub const MAX_SUSPICIOUS_OUTBOUND: usize = 50;
+
+/// Standard outbound destination ports that are considered normal.
+/// Connections to remote ports NOT on this list are flagged as suspicious.
+pub const STANDARD_OUTBOUND_PORTS: &[u16] = &[
+    22, 53, 80, 443, 465, 587, 853, 993, 995, 3306, 5432, 6379, 8080, 8443, 9090, 27017,
+];
 
 /// Known standard ports and their expected services.
 /// Format: (port, expected_process_substring).

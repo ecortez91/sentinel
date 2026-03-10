@@ -55,6 +55,84 @@ impl SecurityPanel {
     }
 }
 
+// ── SSH brute-force tracking ─────────────────────────────────────
+
+/// A source IP flagged for repeated SSH authentication failures.
+#[derive(Debug, Clone)]
+pub struct SshBruteForceEntry {
+    /// Source IP address.
+    pub source_ip: String,
+    /// Number of failed attempts from this IP.
+    #[allow(dead_code)] // will be read by detail popup
+    pub attempt_count: usize,
+    /// Most recent failure timestamp.
+    #[allow(dead_code)] // will be read by detail popup
+    pub last_seen: DateTime<Local>,
+    /// Username(s) targeted (deduplicated).
+    #[allow(dead_code)] // will be read by detail popup
+    pub target_users: Vec<String>,
+}
+
+// ── Cron entry ───────────────────────────────────────────────────
+
+/// A cron job discovered on the system.
+#[derive(Debug, Clone)]
+pub struct CronEntry {
+    /// The user who owns this cron entry.
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub user: String,
+    /// The cron schedule expression (e.g., "*/5 * * * *").
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub schedule: String,
+    /// The command to be run.
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub command: String,
+    /// Source file (e.g., "/var/spool/cron/crontabs/root" or "/etc/cron.d/foo").
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub source: String,
+}
+
+// ── Systemd timer ────────────────────────────────────────────────
+
+/// A systemd timer unit discovered on the system.
+#[derive(Debug, Clone)]
+pub struct SystemdTimer {
+    /// Timer unit name (e.g., "apt-daily.timer").
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub unit: String,
+    /// Human-readable activation description (e.g., "Mon..Fri 06:00").
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub activates: String,
+    /// Whether the timer is currently active/enabled.
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub active: bool,
+    /// Next trigger time (human-readable), if available.
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub next_trigger: Option<String>,
+}
+
+// ── Suspicious outbound connection ──────────────────────────────
+
+/// An outbound connection to a non-standard destination port.
+#[derive(Debug, Clone)]
+pub struct SuspiciousOutbound {
+    /// Process name making the connection.
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub process_name: String,
+    /// Process ID.
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub pid: Option<u32>,
+    /// Remote IP address.
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub remote_addr: String,
+    /// Remote port (the non-standard one).
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub remote_port: u16,
+    /// Local port (ephemeral source port).
+    #[allow(dead_code)] // read by renderer (Phase 2c)
+    pub local_port: u16,
+}
+
 // ── Port risk classification ─────────────────────────────────────
 
 /// Risk level for a listening port.
@@ -120,6 +198,15 @@ pub enum SecurityEventKind {
     AuthEvent,
     /// Security score change.
     ScoreChange,
+    /// SSH brute-force attempt detected.
+    #[allow(dead_code)] // constructed when SSH brute-force events emitted
+    SshBruteForce,
+    /// Suspicious outbound connection to non-standard port.
+    #[allow(dead_code)] // constructed when outbound events emitted
+    SuspiciousOutbound,
+    /// Cron/systemd timer change or anomaly.
+    #[allow(dead_code)] // constructed when scheduled task events emitted
+    ScheduledTask,
 }
 
 impl fmt::Display for SecurityEventKind {
@@ -130,6 +217,9 @@ impl fmt::Display for SecurityEventKind {
             Self::ProcessChange => write!(f, "PROC"),
             Self::AuthEvent => write!(f, "AUTH"),
             Self::ScoreChange => write!(f, "SCORE"),
+            Self::SshBruteForce => write!(f, "SSH"),
+            Self::SuspiciousOutbound => write!(f, "OUTBD"),
+            Self::ScheduledTask => write!(f, "SCHED"),
         }
     }
 }
@@ -153,6 +243,9 @@ impl SecurityEvent {
             SecurityEventKind::ProcessChange => "+",
             SecurityEventKind::AuthEvent => "@",
             SecurityEventKind::ScoreChange => "#",
+            SecurityEventKind::SshBruteForce => "*",
+            SecurityEventKind::SuspiciousOutbound => "~",
+            SecurityEventKind::ScheduledTask => "&",
         }
     }
 
@@ -207,6 +300,20 @@ pub struct SecurityState {
     pub risky_ports: Vec<u16>,
     pub unowned_listeners: usize,
 
+    // ── SSH brute-force detection (#11) ──
+    /// IPs currently flagged for SSH brute-force attempts.
+    pub ssh_brute_force: Vec<SshBruteForceEntry>,
+
+    // ── Cron & systemd monitoring (#12) ──
+    /// Discovered cron jobs.
+    pub cron_entries: Vec<CronEntry>,
+    /// Discovered systemd timers.
+    pub systemd_timers: Vec<SystemdTimer>,
+
+    // ── Suspicious outbound connections (#13) ──
+    /// Outbound connections to non-standard destination ports.
+    pub suspicious_outbound: Vec<SuspiciousOutbound>,
+
     // ── System integrity ──
     pub logged_in_users: Vec<String>,
     pub auth_event_count_24h: usize,
@@ -243,6 +350,10 @@ impl Default for SecurityState {
             suspicious_count: 0,
             risky_ports: Vec::new(),
             unowned_listeners: 0,
+            ssh_brute_force: Vec::new(),
+            cron_entries: Vec::new(),
+            systemd_timers: Vec::new(),
+            suspicious_outbound: Vec::new(),
             logged_in_users: Vec::new(),
             auth_event_count_24h: 0,
             modified_packages: Vec::new(),

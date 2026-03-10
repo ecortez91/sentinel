@@ -433,6 +433,17 @@ fn render_threat_summary(frame: &mut Frame, area: Rect, sec: &SecurityState, t: 
         Color::Green
     };
 
+    let ssh_bf_color = if sec.ssh_brute_force.is_empty() {
+        Color::Green
+    } else {
+        Color::Red
+    };
+    let outbound_color = if sec.suspicious_outbound.is_empty() {
+        Color::Green
+    } else {
+        Color::Yellow
+    };
+
     let lines = vec![
         Line::from(vec![
             Span::styled("  Active threats:    ", Style::default().fg(t.text_dim)),
@@ -478,6 +489,48 @@ fn render_threat_summary(frame: &mut Frame, area: Rect, sec: &SecurityState, t: 
             Span::styled(
                 format!("{}", sec.unowned_listeners),
                 Style::default().fg(unowned_color),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  SSH brute-force:   ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                if sec.ssh_brute_force.is_empty() {
+                    "none".to_string()
+                } else {
+                    format!(
+                        "{} IP{}",
+                        sec.ssh_brute_force.len(),
+                        if sec.ssh_brute_force.len() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    )
+                },
+                Style::default().fg(ssh_bf_color),
+            ),
+            if !sec.ssh_brute_force.is_empty() {
+                Span::styled(
+                    format!(
+                        " ({})",
+                        sec.ssh_brute_force
+                            .iter()
+                            .take(3)
+                            .map(|e| e.source_ip.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    Style::default().fg(t.text_muted),
+                )
+            } else {
+                Span::raw("")
+            },
+        ]),
+        Line::from(vec![
+            Span::styled("  Suspect outbound:  ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                format!("{}", sec.suspicious_outbound.len()),
+                Style::default().fg(outbound_color),
             ),
         ]),
     ];
@@ -558,6 +611,20 @@ fn render_integrity(frame: &mut Frame, area: Rect, sec: &SecurityState, t: &crat
             Span::styled(
                 format!("{}", sec.modified_packages.len()),
                 Style::default().fg(pkg_color),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Cron jobs:         ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                format!("{}", sec.cron_entries.len()),
+                Style::default().fg(t.text_primary),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Systemd timers:    ", Style::default().fg(t.text_dim)),
+            Span::styled(
+                format!("{}", sec.systemd_timers.len()),
+                Style::default().fg(t.text_primary),
             ),
         ]),
         Line::from(vec![
