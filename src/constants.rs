@@ -148,6 +148,14 @@ pub const DEFAULT_SMTP_SERVER: &str = "smtp.gmail.com";
 pub const TELEGRAM_API_BASE: &str = "https://api.telegram.org";
 /// Minimum interval between Telegram messages per (category, PID) pair (seconds).
 pub const TELEGRAM_RATE_LIMIT_SECS: u64 = 300;
+/// Environment variable: Telegram bot token (from @BotFather).
+pub const ENV_TELEGRAM_BOT_TOKEN: &str = "SENTINEL_TELEGRAM_BOT_TOKEN";
+/// Environment variable: Telegram chat ID.
+pub const ENV_TELEGRAM_CHAT_ID: &str = "SENTINEL_TELEGRAM_CHAT_ID";
+/// Default digest interval (seconds). 0 = disabled (individual messages).
+pub const DEFAULT_TELEGRAM_DIGEST_SECS: u64 = 0;
+/// Maximum alerts batched per digest message.
+pub const TELEGRAM_DIGEST_MAX_ALERTS: usize = 20;
 
 // ── Security Dashboard ────────────────────────────────────────────
 /// Security data refresh interval (ticks). At 1s/tick this is ~5s.
