@@ -135,6 +135,66 @@ fn check_locale_cjk() -> bool {
     false
 }
 
+// ── Platform detection ───────────────────────────────────────────
+
+/// Runtime platform detected once at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum RuntimePlatform {
+    /// Running inside WSL2 on a Windows host.
+    Wsl2,
+    /// Native Linux (bare metal or VM, not WSL).
+    Linux,
+    /// macOS.
+    MacOs,
+    /// Native Windows.
+    Windows,
+}
+
+/// Detect the runtime platform.  The result is cached via [`OnceLock`] so
+/// the file-system probes only run once.
+#[allow(dead_code)]
+pub fn detect_platform() -> RuntimePlatform {
+    static PLATFORM: std::sync::OnceLock<RuntimePlatform> = std::sync::OnceLock::new();
+    *PLATFORM.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        {
+            return RuntimePlatform::MacOs;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            return RuntimePlatform::Windows;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // WSL2 sets "microsoft" in the kernel release string
+            if let Ok(release) = std::fs::read_to_string("/proc/sys/kernel/osrelease") {
+                if release.to_lowercase().contains("microsoft") {
+                    return RuntimePlatform::Wsl2;
+                }
+            }
+            RuntimePlatform::Linux
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            RuntimePlatform::Linux // best guess for unknown unix
+        }
+    })
+}
+
+/// Convenience: returns `true` when running inside WSL2.
+#[allow(dead_code)]
+pub fn is_wsl() -> bool {
+    detect_platform() == RuntimePlatform::Wsl2
+}
+
+/// Returns `true` when WSL-to-Windows interop is available (i.e. we can
+/// call `powershell.exe`, `tasklist.exe`, etc.).
+#[allow(dead_code)]
+pub fn has_windows_interop() -> bool {
+    is_wsl()
+}
+
 /// Get animated loading dots for the current tick.
 pub fn loading_dots(tick: u64) -> &'static str {
     match tick % 4 {
@@ -214,5 +274,24 @@ mod tests {
         // Wraps around
         assert_eq!(loading_dots(4), "");
         assert_eq!(loading_dots(7), "...");
+    }
+
+    // ── platform detection ───────────────────────────────────────
+
+    #[test]
+    fn detect_platform_returns_consistent_value() {
+        let p1 = detect_platform();
+        let p2 = detect_platform();
+        assert_eq!(p1, p2, "cached platform should be stable");
+    }
+
+    #[test]
+    fn is_wsl_matches_detect_platform() {
+        assert_eq!(is_wsl(), detect_platform() == RuntimePlatform::Wsl2);
+    }
+
+    #[test]
+    fn has_windows_interop_matches_wsl() {
+        assert_eq!(has_windows_interop(), is_wsl());
     }
 }
