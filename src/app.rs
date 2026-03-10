@@ -374,10 +374,41 @@ impl App {
         let alerts_vec = self.detector.analyze(&system, &processes);
         self.state.update(system, processes, alerts_vec);
 
-        // Main loop
+        // Main loop.
+        //
+        // Render is at the BOTTOM so that `continue` on no-op mouse
+        // events (MouseMoved / Drag, ~75/sec on WSL2) skips directly
+        // to the next poll() without a wasted render cycle.
         loop {
-            terminal.draw(|frame| ui::render_with_plugins(frame, &self.state, Some(&self.plugins)))?;
+            // ── 1. Poll ONE terminal event ───────────────────────
+            if event::poll(Duration::from_millis(EVENT_POLL_MS))? {
+                let terminal_event = event::read()?;
 
+                if let Event::Mouse(mouse) = terminal_event {
+                    match mouse.kind {
+                        // Scroll and click change state — handle and
+                        // fall through to drain/tick/render.
+                        MouseEventKind::ScrollUp
+                        | MouseEventKind::ScrollDown
+                        | MouseEventKind::Down(_)
+                        | MouseEventKind::Up(_) => {
+                            self.handle_mouse(mouse);
+                        }
+                        // MouseMoved / Drag: ~75 events/sec on WSL2.
+                        // Drop entirely — no handler, no render, no
+                        // tick.  Straight back to poll().
+                        _ => continue,
+                    }
+                }
+
+                if let Event::Key(key) = terminal_event {
+                    if self.handle_key(key) {
+                        break; // quit requested
+                    }
+                }
+            }
+
+            // ── 2. Drain async channels ──────────────────────────
             self.drain_ai_events();
             self.drain_insight_events();
             self.drain_docker_events();
@@ -388,24 +419,13 @@ impl App {
             // Tick all plugins (drain their channels, update state)
             self.plugins.tick_all();
 
-            if event::poll(Duration::from_millis(EVENT_POLL_MS))? {
-                let terminal_event = event::read()?;
-
-                if let Event::Mouse(mouse) = terminal_event {
-                    self.handle_mouse(mouse);
-                    continue;
-                }
-
-                if let Event::Key(key) = terminal_event {
-                    if self.handle_key(key) {
-                        break; // quit requested
-                    }
-                }
-            }
-
+            // ── 3. Tick-based logic ──────────────────────────────
             self.tick_refresh();
             self.tick_auto_analysis();
             self.tick_shutdown();
+
+            // ── 4. Render ────────────────────────────────────────
+            terminal.draw(|frame| ui::render_with_plugins(frame, &self.state, Some(&self.plugins)))?;
         }
 
         // Cleanup
