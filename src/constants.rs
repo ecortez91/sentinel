@@ -134,6 +134,32 @@ pub const THERMAL_HISTORY_CAPACITY: usize = 120;
 // ── Market data (Binance) ─────────────────────────────────────────
 /// Default market data polling interval (seconds).
 pub const DEFAULT_MARKET_POLL_SECS: u64 = 30;
+/// Maximum news items to retain per coin.
+pub const MAX_NEWS_ITEMS: usize = 20;
+/// Maximum news headline length for display.
+pub const NEWS_HEADLINE_MAX_LEN: usize = 80;
+/// Candlestick chart: minimum candle body height (characters).
+pub const CANDLE_MIN_BODY_HEIGHT: u16 = 1;
+/// CryptoCompare news API base URL (free tier, no key required).
+pub const CRYPTOCOMPARE_NEWS_URL: &str = "https://min-api.cryptocompare.com/data/v2/news/";
+/// Optional env var for CryptoCompare API key (higher rate limits).
+pub const ENV_CRYPTOCOMPARE_API_KEY: &str = "SENTINEL_CRYPTOCOMPARE_API_KEY";
+/// News feed polling interval (seconds).
+pub const NEWS_POLL_INTERVAL_SECS: u64 = 300;
+/// Candlestick chart: wick character (thin vertical line).
+pub const CANDLE_WICK_CHAR: char = '│';
+/// Candlestick chart: body character (full block).
+pub const CANDLE_BODY_CHAR: char = '█';
+/// Candlestick chart: half body top (upper half block).
+pub const CANDLE_HALF_TOP: char = '▀';
+/// Candlestick chart: half body bottom (lower half block).
+pub const CANDLE_HALF_BOTTOM: char = '▄';
+/// Candlestick chart: minimum rows required for rendering.
+pub const CANDLE_MIN_CHART_ROWS: u16 = 4;
+/// Candlestick chart: column width per candle (char cells including gap).
+pub const CANDLE_COL_WIDTH: u16 = 2;
+/// Candlestick chart: price label width on the right axis.
+pub const CANDLE_PRICE_LABEL_WIDTH: u16 = 12;
 
 // ── Email Notifications ───────────────────────────────────────────
 /// Minimum interval between emails of the same event type (seconds).

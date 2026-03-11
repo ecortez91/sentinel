@@ -1,15 +1,20 @@
 //! Market plugin renderer: list view, detail view, and overlays.
 
 use ratatui::{
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Sparkline, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
-use super::models::{format_change, format_large_number, format_price, ChartRange};
+use super::models::{format_change, format_large_number, format_price, ChartRange, PricePoint};
 use super::state::{MarketState, MarketView};
+use crate::constants::{
+    CANDLE_BODY_CHAR, CANDLE_COL_WIDTH, CANDLE_HALF_BOTTOM, CANDLE_HALF_TOP, CANDLE_MIN_CHART_ROWS,
+    CANDLE_PRICE_LABEL_WIDTH, CANDLE_WICK_CHAR,
+};
 use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
 
@@ -463,15 +468,27 @@ fn render_chart_column(
     state: &MarketState,
     _coin: &super::models::CoinMarket,
     theme: &Theme,
-    glyphs: &Glyphs,
+    _glyphs: &Glyphs,
 ) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(8),    // chart
-            Constraint::Length(1), // range selector
-        ])
-        .split(area);
+    let has_news = !state.news_items.is_empty() || state.news_loading;
+    let chunks = if has_news {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(8),    // chart
+                Constraint::Length(1), // range selector
+                Constraint::Length(8), // news feed (#6)
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(8),    // chart
+                Constraint::Length(1), // range selector
+            ])
+            .split(area)
+    };
 
     // ── Price chart ──────────────────────────────────────────
     let chart_title = format!(" Price Chart ({}) ", state.chart_range.label());
@@ -498,7 +515,7 @@ fn render_chart_column(
             chart_inner,
         );
     } else if let Some(ref history) = state.price_history {
-        render_price_chart(frame, chart_inner, history, theme, glyphs);
+        render_candlestick_chart(frame, chart_inner, history, theme);
     } else {
         frame.render_widget(
             Paragraph::new(Span::styled(
@@ -526,81 +543,349 @@ fn render_chart_column(
         range_spans.push(Span::styled(" ", Style::default()));
     }
     frame.render_widget(Paragraph::new(Line::from(range_spans)), chunks[1]);
+
+    // ── News feed (#6) ───────────────────────────────────────
+    if has_news {
+        render_news_panel(frame, chunks[2], state, theme);
+    }
 }
 
-fn render_price_chart(
-    frame: &mut Frame,
-    area: Rect,
-    history: &[super::models::PricePoint],
-    theme: &Theme,
-    glyphs: &Glyphs,
-) {
-    if history.is_empty() || area.height < 2 {
+/// Render the news feed panel (#6).
+fn render_news_panel(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme) {
+    let news_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(Span::styled(
+            " News ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let news_inner = news_block.inner(area);
+    frame.render_widget(news_block, area);
+
+    if state.news_loading && state.news_items.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " Fetching news...",
+                Style::default().fg(theme.text_muted),
+            )),
+            news_inner,
+        );
         return;
     }
 
-    // Convert to sparkline data (using close prices)
-    let prices: Vec<f64> = history.iter().map(|p| p.price).collect();
-    let min = prices.iter().cloned().fold(f64::MAX, f64::min);
-    let max = prices.iter().cloned().fold(f64::MIN, f64::max);
-    let range = max - min;
-
-    // Sample to fit width
-    let width = area.width as usize;
-    let step = prices.len() as f64 / width as f64;
-    let mut sampled: Vec<u64> = Vec::with_capacity(width);
-    for i in 0..width {
-        let idx = ((i as f64) * step).min(prices.len() as f64 - 1.0) as usize;
-        let val = prices[idx];
-        let normalized = if range > 0.0 {
-            ((val - min) / range * 1000.0) as u64
-        } else {
-            500
-        };
-        sampled.push(normalized);
+    if state.news_items.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " No news available",
+                Style::default().fg(theme.text_muted),
+            )),
+            news_inner,
+        );
+        return;
     }
 
-    // Determine color: green if price went up, red if down
-    let color = if prices.last() >= prices.first() {
-        theme.success
+    let max_items = news_inner.height as usize;
+    let mut lines = Vec::with_capacity(max_items);
+
+    for item in state.news_items.iter().take(max_items) {
+        let sentiment_icon = match item.sentiment.as_deref() {
+            Some("positive") => Span::styled("+", Style::default().fg(theme.success)),
+            Some("negative") => Span::styled("-", Style::default().fg(theme.danger)),
+            _ => Span::styled(" ", Style::default().fg(theme.text_muted)),
+        };
+
+        let time_ago = format_time_ago(item.published_at);
+
+        lines.push(Line::from(vec![
+            Span::styled(" ", Style::default()),
+            sentiment_icon,
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                truncate(&item.title, news_inner.width.saturating_sub(20) as usize),
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled(
+                format!("  {} | {}", item.source, time_ago),
+                Style::default().fg(theme.text_muted),
+            ),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), news_inner);
+}
+
+/// Format epoch seconds to a human-readable "X ago" string.
+fn format_time_ago(epoch_secs: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let diff = (now - epoch_secs).max(0);
+
+    if diff < 60 {
+        "just now".to_string()
+    } else if diff < 3600 {
+        format!("{}m ago", diff / 60)
+    } else if diff < 86400 {
+        format!("{}h ago", diff / 3600)
     } else {
-        theme.danger
+        format!("{}d ago", diff / 86400)
+    }
+}
+
+/// A single OHLC candle bucketed for rendering.
+#[derive(Debug, Clone)]
+struct RenderCandle {
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+}
+
+impl RenderCandle {
+    /// Whether this candle is bullish (close >= open).
+    fn is_bullish(&self) -> bool {
+        self.close >= self.open
+    }
+
+    /// Body top (higher of open/close).
+    fn body_top(&self) -> f64 {
+        self.open.max(self.close)
+    }
+
+    /// Body bottom (lower of open/close).
+    fn body_bottom(&self) -> f64 {
+        self.open.min(self.close)
+    }
+}
+
+/// Bucket `history` into `n` candles by aggregating OHLC across buckets.
+fn bucket_candles(history: &[PricePoint], n: usize) -> Vec<RenderCandle> {
+    if history.is_empty() || n == 0 {
+        return Vec::new();
+    }
+
+    let step = history.len() as f64 / n as f64;
+    let mut candles = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let start = (i as f64 * step) as usize;
+        let end = (((i + 1) as f64 * step) as usize).min(history.len());
+        if start >= end {
+            continue;
+        }
+
+        let slice = &history[start..end];
+        let open = slice[0].open;
+        let close = slice[slice.len() - 1].price;
+        let high = slice.iter().map(|p| p.high).fold(f64::MIN, f64::max);
+        let low = slice.iter().map(|p| p.low).fold(f64::MAX, f64::min);
+
+        candles.push(RenderCandle {
+            open,
+            high,
+            low,
+            close,
+        });
+    }
+
+    candles
+}
+
+/// Map a price value to a row index (0 = top row, max = bottom row).
+/// Returns None if the price is outside the range.
+fn price_to_row(price: f64, min_price: f64, price_range: f64, chart_height: u16) -> u16 {
+    if price_range <= 0.0 || chart_height == 0 {
+        return chart_height / 2;
+    }
+    let ratio = (price - min_price) / price_range;
+    // Invert: high prices → low row numbers (top of terminal)
+    let row = ((1.0 - ratio) * (chart_height.saturating_sub(1) as f64)).round() as u16;
+    row.min(chart_height.saturating_sub(1))
+}
+
+/// Format a price for the Y-axis label (compact).
+fn format_axis_price(price: f64) -> String {
+    if price >= 10000.0 {
+        format!("{:.0}", price)
+    } else if price >= 100.0 {
+        format!("{:.1}", price)
+    } else if price >= 1.0 {
+        format!("{:.2}", price)
+    } else {
+        format!("{:.4}", price)
+    }
+}
+
+/// Render an OHLC candlestick chart into the given area.
+///
+/// Layout: `[chart area][price labels]`
+/// Each candle occupies `CANDLE_COL_WIDTH` columns. Bullish candles are
+/// green, bearish candles are red. Wicks are drawn with `│`, bodies
+/// with `█`.
+fn render_candlestick_chart(frame: &mut Frame, area: Rect, history: &[PricePoint], theme: &Theme) {
+    if history.len() < 2
+        || area.height < CANDLE_MIN_CHART_ROWS
+        || area.width < CANDLE_PRICE_LABEL_WIDTH + 4
+    {
+        return;
+    }
+
+    // Split: chart area | price label column
+    let label_width = CANDLE_PRICE_LABEL_WIDTH;
+    let chart_width = area.width.saturating_sub(label_width);
+    let chart_height = area.height;
+
+    if chart_width < CANDLE_COL_WIDTH * 2 {
+        return;
+    }
+
+    let chart_area = Rect::new(area.x, area.y, chart_width, chart_height);
+    let label_area = Rect::new(area.x + chart_width, area.y, label_width, chart_height);
+
+    // Determine how many candles fit
+    let max_candles = (chart_width / CANDLE_COL_WIDTH) as usize;
+    let n_candles = max_candles.min(history.len());
+
+    let candles = bucket_candles(history, n_candles);
+    if candles.is_empty() {
+        return;
+    }
+
+    // Find global min/max across all candles
+    let global_high = candles.iter().map(|c| c.high).fold(f64::MIN, f64::max);
+    let global_low = candles.iter().map(|c| c.low).fold(f64::MAX, f64::min);
+
+    // Add 2% padding so wicks don't touch edges
+    let price_range = global_high - global_low;
+    let padding = if price_range > 0.0 {
+        price_range * 0.02
+    } else {
+        global_high * 0.01
     };
+    let min_price = global_low - padding;
+    let max_price = global_high + padding;
+    let padded_range = max_price - min_price;
 
-    // Price labels on sides
-    let price_label_area = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(area);
+    // Draw candles directly into the frame buffer
+    let buf = frame.buffer_mut();
+    draw_candles_to_buffer(buf, &chart_area, &candles, min_price, padded_range, theme);
 
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            format!(" ${:.2}", max),
-            Style::default().fg(theme.text_muted),
-        )),
-        price_label_area[0],
-    );
+    // Draw price labels (top, mid, bottom)
+    let labels = build_price_labels(min_price, max_price, chart_height, theme);
+    frame.render_widget(Paragraph::new(labels), label_area);
+}
 
-    // Sparkline in middle
-    let sparkline = Sparkline::default()
-        .data(&sampled)
-        .max(1000)
-        .style(Style::default().fg(color))
-        .bar_set(glyphs.bar_set.clone());
+/// Draw individual candle sticks directly into the terminal buffer.
+fn draw_candles_to_buffer(
+    buf: &mut Buffer,
+    area: &Rect,
+    candles: &[RenderCandle],
+    min_price: f64,
+    price_range: f64,
+    theme: &Theme,
+) {
+    let chart_height = area.height;
 
-    frame.render_widget(sparkline, price_label_area[1]);
+    for (i, candle) in candles.iter().enumerate() {
+        let col = area.x + (i as u16) * CANDLE_COL_WIDTH;
+        if col >= area.x + area.width {
+            break;
+        }
 
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            format!(" ${:.2}", min),
-            Style::default().fg(theme.text_muted),
-        )),
-        price_label_area[2],
-    );
+        let color = if candle.is_bullish() {
+            theme.success
+        } else {
+            theme.danger
+        };
+
+        let wick_style = Style::default().fg(color);
+        let body_style = Style::default().fg(color);
+
+        // Map prices to rows
+        let high_row = price_to_row(candle.high, min_price, price_range, chart_height);
+        let low_row = price_to_row(candle.low, min_price, price_range, chart_height);
+        let body_top_row = price_to_row(candle.body_top(), min_price, price_range, chart_height);
+        let body_bot_row = price_to_row(candle.body_bottom(), min_price, price_range, chart_height);
+
+        // Draw upper wick (from high_row to body_top_row, exclusive of body)
+        for row in high_row..body_top_row {
+            let y = area.y + row;
+            if y < area.y + area.height && col < area.x + area.width {
+                buf[(col, y)]
+                    .set_char(CANDLE_WICK_CHAR)
+                    .set_style(wick_style);
+            }
+        }
+
+        // Draw body (from body_top_row to body_bot_row, inclusive)
+        let body_end = body_bot_row.max(body_top_row); // handle zero-height doji
+        for row in body_top_row..=body_end {
+            let y = area.y + row;
+            if y < area.y + area.height && col < area.x + area.width {
+                buf[(col, y)]
+                    .set_char(CANDLE_BODY_CHAR)
+                    .set_style(body_style);
+            }
+        }
+
+        // If body is zero-height (doji), use a half-block
+        if body_top_row == body_bot_row {
+            let y = area.y + body_top_row;
+            if y < area.y + area.height && col < area.x + area.width {
+                let doji_char = if candle.is_bullish() {
+                    CANDLE_HALF_TOP
+                } else {
+                    CANDLE_HALF_BOTTOM
+                };
+                buf[(col, y)].set_char(doji_char).set_style(body_style);
+            }
+        }
+
+        // Draw lower wick (from body_bot_row+1 to low_row, inclusive)
+        for row in (body_bot_row + 1)..=low_row {
+            let y = area.y + row;
+            if y < area.y + area.height && col < area.x + area.width {
+                buf[(col, y)]
+                    .set_char(CANDLE_WICK_CHAR)
+                    .set_style(wick_style);
+            }
+        }
+    }
+}
+
+/// Build Y-axis price labels for the chart.
+fn build_price_labels<'a>(
+    min_price: f64,
+    max_price: f64,
+    chart_height: u16,
+    theme: &Theme,
+) -> Vec<Line<'a>> {
+    let mut lines: Vec<Line<'a>> = Vec::with_capacity(chart_height as usize);
+    let label_style = Style::default().fg(theme.text_muted);
+
+    // Show labels at top, middle, and bottom
+    let mid_price = (min_price + max_price) / 2.0;
+    let mid_row = chart_height / 2;
+
+    for row in 0..chart_height {
+        let label = if row == 0 {
+            format!(" ${}", format_axis_price(max_price))
+        } else if row == mid_row {
+            format!(" ${}", format_axis_price(mid_price))
+        } else if row == chart_height - 1 {
+            format!(" ${}", format_axis_price(min_price))
+        } else {
+            String::new()
+        };
+
+        lines.push(Line::from(Span::styled(label, label_style)));
+    }
+
+    lines
 }
 
 fn render_stats_column(
@@ -610,13 +895,25 @@ fn render_stats_column(
     coin: &super::models::CoinMarket,
     theme: &Theme,
 ) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(10), // market stats
-            Constraint::Min(6),     // AI analysis
-        ])
-        .split(area);
+    let has_range_stats = state.range_stats.is_some();
+    let chunks = if has_range_stats {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(10), // market stats
+                Constraint::Length(10), // range analysis (#7)
+                Constraint::Min(4),     // AI analysis
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(10), // market stats
+                Constraint::Min(6),     // AI analysis
+            ])
+            .split(area)
+    };
 
     // ── Market Stats ─────────────────────────────────────────
     let stats_block = Block::default()
@@ -697,6 +994,14 @@ fn render_stats_column(
         stats_inner,
     );
 
+    // ── Range Analysis (#7) ──────────────────────────────────
+    let ai_chunk_idx = if has_range_stats {
+        render_range_analysis(frame, chunks[1], state, theme);
+        2
+    } else {
+        1
+    };
+
     // ── AI Analysis ──────────────────────────────────────────
     let ai_title = if state.ai_loading {
         " AI Sentiment (analyzing...) "
@@ -720,8 +1025,8 @@ fn render_stats_column(
                 .add_modifier(Modifier::BOLD),
         ));
 
-    let ai_inner = ai_block.inner(chunks[1]);
-    frame.render_widget(ai_block, chunks[1]);
+    let ai_inner = ai_block.inner(chunks[ai_chunk_idx]);
+    frame.render_widget(ai_block, chunks[ai_chunk_idx]);
 
     if let Some(ref analysis) = state.ai_analysis {
         let wrapped: Vec<Line> = analysis
@@ -770,6 +1075,91 @@ fn render_stats_column(
     }
 }
 
+/// Render the Range Analysis panel (#7).
+fn render_range_analysis(frame: &mut Frame, area: Rect, state: &MarketState, theme: &Theme) {
+    let range_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(Span::styled(
+            format!(" Range Analysis ({}) ", state.chart_range.label()),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let range_inner = range_block.inner(area);
+    frame.render_widget(range_block, area);
+
+    if let Some(ref stats) = state.range_stats {
+        let trend_color = if stats.trend_pct > 0.5 {
+            theme.success
+        } else if stats.trend_pct < -0.5 {
+            theme.danger
+        } else {
+            theme.text_dim
+        };
+
+        let total_candles = stats.bullish_count + stats.bearish_count;
+        let bull_pct = if total_candles > 0 {
+            (stats.bullish_count as f64 / total_candles as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let mut lines = Vec::new();
+        lines.push(stat_line(
+            "Range High",
+            &format_price(stats.range_high),
+            theme.success,
+            theme,
+        ));
+        lines.push(stat_line(
+            "Range Low",
+            &format_price(stats.range_low),
+            theme.danger,
+            theme,
+        ));
+        lines.push(stat_line(
+            "Range %",
+            &format!("{:.2}%", stats.range_pct),
+            theme.text_primary,
+            theme,
+        ));
+        lines.push(stat_line(
+            "Volatility",
+            &format!("{:.3}%", stats.volatility_pct),
+            theme.warning,
+            theme,
+        ));
+        lines.push(stat_line(
+            "Trend",
+            &format_change(stats.trend_pct),
+            trend_color,
+            theme,
+        ));
+        lines.push(stat_line(
+            "Avg Close",
+            &format_price(stats.avg_close),
+            theme.text_dim,
+            theme,
+        ));
+        lines.push(stat_line(
+            "Bull/Bear",
+            &format!(
+                "{}/{} ({:.0}%)",
+                stats.bullish_count, stats.bearish_count, bull_pct
+            ),
+            theme.text_primary,
+            theme,
+        ));
+
+        frame.render_widget(
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
+            range_inner,
+        );
+    }
+}
+
 /// Build a stat line: "  Label ........... value"
 fn stat_line<'a>(label: &str, value: &str, value_color: Color, theme: &Theme) -> Line<'a> {
     let label_width = 12;
@@ -785,5 +1175,216 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max.saturating_sub(3)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_point(open: f64, high: f64, low: f64, close: f64) -> PricePoint {
+        PricePoint {
+            timestamp: 0,
+            open,
+            high,
+            low,
+            price: close,
+        }
+    }
+
+    // ── bucket_candles tests ─────────────────────────────────
+
+    #[test]
+    fn bucket_candles_empty_history() {
+        let result = bucket_candles(&[], 5);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn bucket_candles_zero_buckets() {
+        let history = vec![make_point(100.0, 110.0, 90.0, 105.0)];
+        let result = bucket_candles(&history, 0);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn bucket_candles_one_to_one() {
+        let history = vec![
+            make_point(100.0, 110.0, 90.0, 105.0),
+            make_point(105.0, 115.0, 95.0, 112.0),
+            make_point(112.0, 120.0, 100.0, 108.0),
+        ];
+        let candles = bucket_candles(&history, 3);
+        assert_eq!(candles.len(), 3);
+        assert!((candles[0].open - 100.0).abs() < 0.01);
+        assert!((candles[0].close - 105.0).abs() < 0.01);
+        assert!((candles[2].open - 112.0).abs() < 0.01);
+        assert!((candles[2].close - 108.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn bucket_candles_aggregates_ohlc() {
+        // 4 points bucketed into 2 candles
+        let history = vec![
+            make_point(100.0, 115.0, 95.0, 110.0),
+            make_point(110.0, 120.0, 105.0, 108.0),
+            make_point(108.0, 125.0, 100.0, 118.0),
+            make_point(118.0, 130.0, 110.0, 122.0),
+        ];
+        let candles = bucket_candles(&history, 2);
+        assert_eq!(candles.len(), 2);
+
+        // First bucket: points 0-1
+        assert!((candles[0].open - 100.0).abs() < 0.01); // open of first point
+        assert!((candles[0].close - 108.0).abs() < 0.01); // close of last point in bucket
+        assert!((candles[0].high - 120.0).abs() < 0.01); // max high
+        assert!((candles[0].low - 95.0).abs() < 0.01); // min low
+
+        // Second bucket: points 2-3
+        assert!((candles[1].open - 108.0).abs() < 0.01);
+        assert!((candles[1].close - 122.0).abs() < 0.01);
+        assert!((candles[1].high - 130.0).abs() < 0.01);
+        assert!((candles[1].low - 100.0).abs() < 0.01);
+    }
+
+    // ── RenderCandle tests ───────────────────────────────────
+
+    #[test]
+    fn render_candle_bullish() {
+        let candle = RenderCandle {
+            open: 100.0,
+            high: 110.0,
+            low: 90.0,
+            close: 105.0,
+        };
+        assert!(candle.is_bullish());
+        assert!((candle.body_top() - 105.0).abs() < 0.01);
+        assert!((candle.body_bottom() - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn render_candle_bearish() {
+        let candle = RenderCandle {
+            open: 105.0,
+            high: 110.0,
+            low: 90.0,
+            close: 100.0,
+        };
+        assert!(!candle.is_bullish());
+        assert!((candle.body_top() - 105.0).abs() < 0.01);
+        assert!((candle.body_bottom() - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn render_candle_doji() {
+        let candle = RenderCandle {
+            open: 100.0,
+            high: 110.0,
+            low: 90.0,
+            close: 100.0,
+        };
+        assert!(candle.is_bullish()); // close >= open
+        assert!((candle.body_top() - candle.body_bottom()).abs() < 0.01);
+    }
+
+    // ── price_to_row tests ───────────────────────────────────
+
+    #[test]
+    fn price_to_row_maps_max_to_top() {
+        let row = price_to_row(200.0, 100.0, 100.0, 20);
+        assert_eq!(row, 0);
+    }
+
+    #[test]
+    fn price_to_row_maps_min_to_bottom() {
+        let row = price_to_row(100.0, 100.0, 100.0, 20);
+        assert_eq!(row, 19);
+    }
+
+    #[test]
+    fn price_to_row_maps_mid_to_middle() {
+        let row = price_to_row(150.0, 100.0, 100.0, 20);
+        // ratio = 0.5, inverted = 0.5 * 19 = ~10
+        assert_eq!(row, 10);
+    }
+
+    #[test]
+    fn price_to_row_zero_range() {
+        let row = price_to_row(100.0, 100.0, 0.0, 20);
+        assert_eq!(row, 10); // midpoint
+    }
+
+    // ── format_axis_price tests ──────────────────────────────
+
+    #[test]
+    fn format_axis_price_large() {
+        assert_eq!(format_axis_price(67000.0), "67000");
+    }
+
+    #[test]
+    fn format_axis_price_medium() {
+        assert_eq!(format_axis_price(350.5), "350.5");
+    }
+
+    #[test]
+    fn format_axis_price_small() {
+        assert_eq!(format_axis_price(1.2345), "1.23");
+    }
+
+    #[test]
+    fn format_axis_price_tiny() {
+        assert_eq!(format_axis_price(0.1234), "0.1234");
+    }
+
+    // ── format_time_ago tests ────────────────────────────────
+
+    #[test]
+    fn format_time_ago_recent() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(format_time_ago(now), "just now");
+    }
+
+    #[test]
+    fn format_time_ago_minutes() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(format_time_ago(now - 300), "5m ago");
+    }
+
+    #[test]
+    fn format_time_ago_hours() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(format_time_ago(now - 7200), "2h ago");
+    }
+
+    #[test]
+    fn format_time_ago_days() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(format_time_ago(now - 172800), "2d ago");
+    }
+
+    // ── truncate tests ───────────────────────────────────────
+
+    #[test]
+    fn truncate_short_string() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_long_string() {
+        let result = truncate("this is a very long headline", 15);
+        assert!(result.len() <= 15);
+        assert!(result.ends_with("..."));
     }
 }

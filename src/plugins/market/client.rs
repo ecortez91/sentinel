@@ -3,7 +3,10 @@
 //! Fetches market data using Binance's free public API.
 //! No API key required for public endpoints.
 
-use super::models::{BinanceKline, BinanceTicker24hr, CoinMarket, PricePoint};
+use super::models::{BinanceKline, BinanceTicker24hr, CoinMarket, NewsItem, PricePoint};
+use crate::constants::{
+    CRYPTOCOMPARE_NEWS_URL, ENV_CRYPTOCOMPARE_API_KEY, MAX_NEWS_ITEMS, NEWS_HEADLINE_MAX_LEN,
+};
 
 const BINANCE_BASE_URL: &str = "https://api.binance.com/api/v3";
 
@@ -134,6 +137,93 @@ impl BinanceClient {
         let price_resp: PriceResponse = resp.json().await?;
         Ok(price_resp.price.parse().unwrap_or(0.0))
     }
+
+    /// Fetch crypto news from CryptoCompare (#6).
+    ///
+    /// Optionally filters by categories matching the given coin symbols.
+    /// Uses the free API; if `SENTINEL_CRYPTOCOMPARE_API_KEY` is set, it's
+    /// sent as a query parameter for higher rate limits.
+    pub async fn fetch_news(
+        &self,
+        categories: &[String],
+    ) -> Result<Vec<NewsItem>, Box<dyn std::error::Error + Send + Sync>> {
+        let api_key = std::env::var(ENV_CRYPTOCOMPARE_API_KEY).ok();
+
+        let mut req = self.client.get(CRYPTOCOMPARE_NEWS_URL);
+
+        // Filter by coin categories if available (e.g., "BTC,ETH")
+        if !categories.is_empty() {
+            let cats = categories.join(",");
+            req = req.query(&[("categories", &cats)]);
+        }
+
+        if let Some(ref key) = api_key {
+            req = req.query(&[("api_key", key)]);
+        }
+
+        let resp = req.send().await?;
+
+        if !resp.status().is_success() {
+            return Err(format!("News API returned status {}", resp.status()).into());
+        }
+
+        let body: CryptoCompareNewsResponse = resp.json().await?;
+
+        let items: Vec<NewsItem> = body
+            .data
+            .into_iter()
+            .take(MAX_NEWS_ITEMS)
+            .map(|article| {
+                let title = if article.title.len() > NEWS_HEADLINE_MAX_LEN {
+                    format!("{}...", &article.title[..NEWS_HEADLINE_MAX_LEN.saturating_sub(3)])
+                } else {
+                    article.title
+                };
+
+                NewsItem {
+                    title,
+                    source: article.source,
+                    published_at: article.published_on,
+                    url: article.url,
+                    sentiment: sentiment_label(&article.sentiment),
+                }
+            })
+            .collect();
+
+        Ok(items)
+    }
+}
+
+/// Map CryptoCompare sentiment string to a label.
+fn sentiment_label(sentiment: &str) -> Option<String> {
+    match sentiment.to_lowercase().as_str() {
+        "positive" | "bullish" => Some("positive".to_string()),
+        "negative" | "bearish" => Some("negative".to_string()),
+        "neutral" => Some("neutral".to_string()),
+        _ => None,
+    }
+}
+
+/// CryptoCompare news API response structure.
+#[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
+struct CryptoCompareNewsResponse {
+    #[serde(rename = "Data")]
+    data: Vec<CryptoCompareArticle>,
+}
+
+/// A single article from CryptoCompare.
+#[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
+struct CryptoCompareArticle {
+    title: String,
+    source: String,
+    url: String,
+    published_on: i64,
+    #[serde(default)]
+    categories: String,
+    #[serde(default)]
+    sentiment: String,
 }
 
 impl Default for BinanceClient {
@@ -207,5 +297,71 @@ mod tests {
         let kline: BinanceKline = serde_json::from_str(json).unwrap();
         assert_eq!(kline.close_time, 1711929599999);
         assert_eq!(kline.close, "69000.00");
+    }
+
+    // ── CryptoCompare news parsing tests (#6) ────────────────
+
+    #[test]
+    fn parse_cryptocompare_news_response() {
+        let json = r#"{
+            "Data": [
+                {
+                    "title": "Bitcoin Surges to New High",
+                    "source": "CoinDesk",
+                    "url": "https://example.com/btc-high",
+                    "published_on": 1700000000,
+                    "categories": "BTC|Trading",
+                    "sentiment": "positive"
+                },
+                {
+                    "title": "Ethereum Network Upgrade Scheduled",
+                    "source": "CryptoSlate",
+                    "url": "https://example.com/eth-upgrade",
+                    "published_on": 1699999000,
+                    "categories": "ETH|Technology",
+                    "sentiment": "neutral"
+                }
+            ]
+        }"#;
+
+        let resp: CryptoCompareNewsResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.data.len(), 2);
+        assert_eq!(resp.data[0].title, "Bitcoin Surges to New High");
+        assert_eq!(resp.data[0].source, "CoinDesk");
+        assert_eq!(resp.data[0].published_on, 1700000000);
+        assert_eq!(resp.data[1].sentiment, "neutral");
+    }
+
+    #[test]
+    fn parse_cryptocompare_article_missing_optional_fields() {
+        let json = r#"{
+            "title": "Generic news article",
+            "source": "Unknown",
+            "url": "https://example.com",
+            "published_on": 1700000000
+        }"#;
+
+        let article: CryptoCompareArticle = serde_json::from_str(json).unwrap();
+        assert_eq!(article.title, "Generic news article");
+        assert_eq!(article.categories, ""); // default
+        assert_eq!(article.sentiment, "");  // default
+    }
+
+    #[test]
+    fn sentiment_label_mapping() {
+        assert_eq!(sentiment_label("positive"), Some("positive".to_string()));
+        assert_eq!(sentiment_label("bullish"), Some("positive".to_string()));
+        assert_eq!(sentiment_label("negative"), Some("negative".to_string()));
+        assert_eq!(sentiment_label("bearish"), Some("negative".to_string()));
+        assert_eq!(sentiment_label("neutral"), Some("neutral".to_string()));
+        assert_eq!(sentiment_label("unknown"), None);
+        assert_eq!(sentiment_label(""), None);
+    }
+
+    #[test]
+    fn sentiment_label_case_insensitive() {
+        assert_eq!(sentiment_label("POSITIVE"), Some("positive".to_string()));
+        assert_eq!(sentiment_label("Negative"), Some("negative".to_string()));
+        assert_eq!(sentiment_label("NEUTRAL"), Some("neutral".to_string()));
     }
 }

@@ -30,10 +30,114 @@ pub struct CoinMarket {
 #[allow(dead_code)]
 pub struct PricePoint {
     pub timestamp: i64,
-    pub price: f64,  // Close price
+    pub price: f64, // Close price
     pub high: f64,
     pub low: f64,
     pub open: f64,
+}
+
+/// Extended range statistics computed from OHLC history (#7).
+#[derive(Debug, Clone, Default)]
+pub struct RangeStats {
+    /// Highest price in the range.
+    pub range_high: f64,
+    /// Lowest price in the range.
+    pub range_low: f64,
+    /// Range as percentage: ((high - low) / low) * 100.
+    pub range_pct: f64,
+    /// Annualized volatility estimate (std dev of returns * sqrt(periods)).
+    pub volatility_pct: f64,
+    /// Average volume per candle (if available).
+    pub avg_close: f64,
+    /// Price trend: positive means upward, negative means downward.
+    pub trend_pct: f64,
+    /// Number of bullish candles (close > open).
+    pub bullish_count: usize,
+    /// Number of bearish candles (close < open).
+    pub bearish_count: usize,
+}
+
+/// Compute range statistics from OHLC price history (#7).
+pub fn compute_range_stats(history: &[PricePoint]) -> Option<RangeStats> {
+    if history.len() < 2 {
+        return None;
+    }
+
+    let range_high = history.iter().map(|p| p.high).fold(f64::MIN, f64::max);
+    let range_low = history.iter().map(|p| p.low).fold(f64::MAX, f64::min);
+    let range_pct = if range_low > 0.0 {
+        ((range_high - range_low) / range_low) * 100.0
+    } else {
+        0.0
+    };
+
+    // Compute returns for volatility
+    let returns: Vec<f64> = history
+        .windows(2)
+        .filter_map(|w| {
+            if w[0].price > 0.0 {
+                Some((w[1].price / w[0].price).ln())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let volatility_pct = if returns.len() >= 2 {
+        let mean = returns.iter().sum::<f64>() / returns.len() as f64;
+        let variance =
+            returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (returns.len() - 1) as f64;
+        let std_dev = variance.sqrt();
+        // Annualize: multiply by sqrt(periods_per_year)
+        // For simplicity, just report the period std dev as percentage
+        std_dev * 100.0
+    } else {
+        0.0
+    };
+
+    let avg_close = history.iter().map(|p| p.price).sum::<f64>() / history.len() as f64;
+
+    let first_price = history.first().map(|p| p.price).unwrap_or(0.0);
+    let last_price = history.last().map(|p| p.price).unwrap_or(0.0);
+    let trend_pct = if first_price > 0.0 {
+        ((last_price - first_price) / first_price) * 100.0
+    } else {
+        0.0
+    };
+
+    let bullish_count = history.iter().filter(|p| p.price >= p.open).count();
+    let bearish_count = history.iter().filter(|p| p.price < p.open).count();
+
+    Some(RangeStats {
+        range_high,
+        range_low,
+        range_pct,
+        volatility_pct,
+        avg_close,
+        trend_pct,
+        bullish_count,
+        bearish_count,
+    })
+}
+
+/// A news item for the market feed (#6).
+#[derive(Debug, Clone)]
+pub struct NewsItem {
+    /// Headline text.
+    #[allow(dead_code)] // read by renderer
+    pub title: String,
+    /// Source name (e.g., "CoinDesk", "CryptoSlate").
+    #[allow(dead_code)] // read by renderer
+    pub source: String,
+    /// Publication timestamp (epoch seconds).
+    #[allow(dead_code)] // read by renderer
+    pub published_at: i64,
+    /// URL to the full article.
+    #[allow(dead_code)] // read by renderer
+    pub url: String,
+    /// Sentiment label if available ("positive", "negative", "neutral").
+    #[allow(dead_code)] // read by renderer
+    pub sentiment: Option<String>,
 }
 
 /// Chart time range selector.
@@ -61,11 +165,11 @@ impl ChartRange {
     /// Number of data points to fetch.
     pub fn limit(&self) -> u32 {
         match self {
-            ChartRange::Hour1 => 60,    // 60 minutes
-            ChartRange::Hour4 => 48,    // 48 x 5min
-            ChartRange::Day1 => 24,     // 24 hours
-            ChartRange::Week1 => 42,    // 7 days x 6 (4h intervals)
-            ChartRange::Month1 => 30,   // 30 days
+            ChartRange::Hour1 => 60,  // 60 minutes
+            ChartRange::Hour4 => 48,  // 48 x 5min
+            ChartRange::Day1 => 24,   // 24 hours
+            ChartRange::Week1 => 42,  // 7 days x 6 (4h intervals)
+            ChartRange::Month1 => 30, // 30 days
         }
     }
 
@@ -135,7 +239,7 @@ impl BinanceTicker24hr {
     pub fn into_coin_market(self, rank: u32) -> CoinMarket {
         // Extract base asset from symbol (e.g., "BTC" from "BTCUSDT")
         let name = extract_base_asset(&self.symbol);
-        
+
         CoinMarket {
             symbol: self.symbol,
             name,
@@ -179,19 +283,51 @@ impl<'de> Deserialize<'de> for BinanceKline {
         D: serde::Deserializer<'de>,
     {
         let arr: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
-        
+
         Ok(BinanceKline {
             open_time: arr.get(0).and_then(|v| v.as_i64()).unwrap_or(0),
-            open: arr.get(1).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
-            high: arr.get(2).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
-            low: arr.get(3).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
-            close: arr.get(4).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
-            volume: arr.get(5).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
+            open: arr
+                .get(1)
+                .and_then(|v| v.as_str())
+                .unwrap_or("0")
+                .to_string(),
+            high: arr
+                .get(2)
+                .and_then(|v| v.as_str())
+                .unwrap_or("0")
+                .to_string(),
+            low: arr
+                .get(3)
+                .and_then(|v| v.as_str())
+                .unwrap_or("0")
+                .to_string(),
+            close: arr
+                .get(4)
+                .and_then(|v| v.as_str())
+                .unwrap_or("0")
+                .to_string(),
+            volume: arr
+                .get(5)
+                .and_then(|v| v.as_str())
+                .unwrap_or("0")
+                .to_string(),
             close_time: arr.get(6).and_then(|v| v.as_i64()).unwrap_or(0),
-            quote_volume: arr.get(7).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
+            quote_volume: arr
+                .get(7)
+                .and_then(|v| v.as_str())
+                .unwrap_or("0")
+                .to_string(),
             trades: arr.get(8).and_then(|v| v.as_u64()).unwrap_or(0),
-            taker_buy_base: arr.get(9).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
-            taker_buy_quote: arr.get(10).and_then(|v| v.as_str()).unwrap_or("0").to_string(),
+            taker_buy_base: arr
+                .get(9)
+                .and_then(|v| v.as_str())
+                .unwrap_or("0")
+                .to_string(),
+            taker_buy_quote: arr
+                .get(10)
+                .and_then(|v| v.as_str())
+                .unwrap_or("0")
+                .to_string(),
         })
     }
 }
@@ -203,13 +339,13 @@ impl<'de> Deserialize<'de> for BinanceKline {
 fn extract_base_asset(symbol: &str) -> String {
     // Common quote assets to strip
     let quote_assets = ["USDT", "USDC", "BUSD", "USD", "BTC", "ETH", "BNB"];
-    
+
     for quote in quote_assets {
         if symbol.ends_with(quote) && symbol.len() > quote.len() {
             return symbol[..symbol.len() - quote.len()].to_string();
         }
     }
-    
+
     symbol.to_string()
 }
 
@@ -320,5 +456,120 @@ mod tests {
     #[test]
     fn chart_range_all_has_five() {
         assert_eq!(ChartRange::all().len(), 5);
+    }
+
+    // ── compute_range_stats tests (#7) ───────────────────────
+
+    fn make_point(open: f64, high: f64, low: f64, close: f64) -> PricePoint {
+        PricePoint {
+            timestamp: 0,
+            open,
+            high,
+            low,
+            price: close,
+        }
+    }
+
+    #[test]
+    fn range_stats_returns_none_for_too_few_points() {
+        assert!(compute_range_stats(&[]).is_none());
+        assert!(compute_range_stats(&[make_point(100.0, 110.0, 90.0, 105.0)]).is_none());
+    }
+
+    #[test]
+    fn range_stats_computes_high_low() {
+        let history = vec![
+            make_point(100.0, 120.0, 95.0, 110.0),
+            make_point(110.0, 130.0, 100.0, 125.0),
+            make_point(125.0, 140.0, 105.0, 115.0),
+        ];
+        let stats = compute_range_stats(&history).unwrap();
+        assert!((stats.range_high - 140.0).abs() < 0.01);
+        assert!((stats.range_low - 95.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn range_stats_computes_range_pct() {
+        let history = vec![
+            make_point(100.0, 200.0, 100.0, 150.0),
+            make_point(150.0, 200.0, 100.0, 180.0),
+        ];
+        let stats = compute_range_stats(&history).unwrap();
+        // range_pct = ((200 - 100) / 100) * 100 = 100%
+        assert!((stats.range_pct - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn range_stats_computes_trend() {
+        let history = vec![
+            make_point(100.0, 110.0, 90.0, 100.0), // first close = 100
+            make_point(100.0, 120.0, 95.0, 110.0),
+            make_point(110.0, 130.0, 105.0, 120.0), // last close = 120
+        ];
+        let stats = compute_range_stats(&history).unwrap();
+        // trend = ((120 - 100) / 100) * 100 = 20%
+        assert!((stats.trend_pct - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn range_stats_counts_bullish_bearish() {
+        let history = vec![
+            make_point(100.0, 110.0, 90.0, 105.0), // bullish (close > open)
+            make_point(110.0, 120.0, 95.0, 105.0), // bearish (close < open)
+            make_point(105.0, 115.0, 100.0, 110.0), // bullish
+            make_point(110.0, 115.0, 105.0, 110.0), // bullish (close == open)
+        ];
+        let stats = compute_range_stats(&history).unwrap();
+        assert_eq!(stats.bullish_count, 3);
+        assert_eq!(stats.bearish_count, 1);
+    }
+
+    #[test]
+    fn range_stats_volatility_is_positive() {
+        let history = vec![
+            make_point(100.0, 110.0, 90.0, 105.0),
+            make_point(105.0, 115.0, 95.0, 100.0),
+            make_point(100.0, 112.0, 88.0, 108.0),
+        ];
+        let stats = compute_range_stats(&history).unwrap();
+        assert!(stats.volatility_pct > 0.0);
+    }
+
+    #[test]
+    fn range_stats_avg_close() {
+        let history = vec![
+            make_point(100.0, 110.0, 90.0, 100.0),
+            make_point(100.0, 110.0, 90.0, 200.0),
+        ];
+        let stats = compute_range_stats(&history).unwrap();
+        assert!((stats.avg_close - 150.0).abs() < 0.01);
+    }
+
+    // ── NewsItem tests (#6) ──────────────────────────────────
+
+    #[test]
+    fn news_item_creation() {
+        let item = NewsItem {
+            title: "Bitcoin hits new high".to_string(),
+            source: "CoinDesk".to_string(),
+            published_at: 1700000000,
+            url: "https://example.com/news".to_string(),
+            sentiment: Some("positive".to_string()),
+        };
+        assert_eq!(item.title, "Bitcoin hits new high");
+        assert_eq!(item.source, "CoinDesk");
+        assert_eq!(item.sentiment, Some("positive".to_string()));
+    }
+
+    #[test]
+    fn news_item_no_sentiment() {
+        let item = NewsItem {
+            title: "Market update".to_string(),
+            source: "CryptoSlate".to_string(),
+            published_at: 1700000000,
+            url: "https://example.com".to_string(),
+            sentiment: None,
+        };
+        assert!(item.sentiment.is_none());
     }
 }

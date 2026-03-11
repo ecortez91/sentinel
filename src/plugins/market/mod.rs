@@ -35,6 +35,10 @@ pub struct MarketPlugin {
     chart_rx: mpsc::UnboundedReceiver<ChartResult>,
     /// Sender for chart data fetches.
     chart_tx: mpsc::UnboundedSender<ChartResult>,
+    /// Receiver for news data fetches (#6).
+    news_rx: mpsc::UnboundedReceiver<NewsResult>,
+    /// Sender for news data fetches (#6).
+    news_tx: mpsc::UnboundedSender<NewsResult>,
     /// Whether the background poller has been spawned.
     poller_spawned: bool,
     /// Sends updated watchlist to the background poller.
@@ -63,6 +67,12 @@ enum ChartResult {
     Error(String),
 }
 
+/// Result from a news fetch.
+enum NewsResult {
+    Data(Vec<models::NewsItem>),
+    Error(String),
+}
+
 impl MarketPlugin {
     /// Create a new market plugin with the given configuration.
     pub fn new(
@@ -73,6 +83,7 @@ impl MarketPlugin {
     ) -> Self {
         let (market_tx, market_rx) = mpsc::unbounded_channel();
         let (chart_tx, chart_rx) = mpsc::unbounded_channel();
+        let (news_tx, news_rx) = mpsc::unbounded_channel();
         let (watchlist_tx, _) = watch::channel(watchlist.clone());
 
         Self {
@@ -82,6 +93,8 @@ impl MarketPlugin {
             market_tx,
             chart_rx,
             chart_tx,
+            news_rx,
+            news_tx,
             poller_spawned: false,
             watchlist_tx,
             poll_interval_secs,
@@ -197,6 +210,24 @@ impl MarketPlugin {
         });
     }
 
+    /// Fetch news for the currently selected coin (#6).
+    fn fetch_news(&self, coin_name: &str) {
+        let tx = self.news_tx.clone();
+        let client = self.client.clone();
+        let categories = vec![coin_name.to_string()];
+
+        tokio::spawn(async move {
+            match client.fetch_news(&categories).await {
+                Ok(items) => {
+                    let _ = tx.send(NewsResult::Data(items));
+                }
+                Err(e) => {
+                    let _ = tx.send(NewsResult::Error(e.to_string()));
+                }
+            }
+        });
+    }
+
     /// Build the AI analysis context for the currently selected coin.
     fn build_ai_context(&self) -> Option<String> {
         let coin = self.state.detail_coin.as_ref()?;
@@ -300,11 +331,27 @@ impl Plugin for MarketPlugin {
         while let Ok(result) = self.chart_rx.try_recv() {
             match result {
                 ChartResult::Data(points) => {
+                    // Compute range stats from OHLC data (#7)
+                    self.state.range_stats = models::compute_range_stats(&points);
                     self.state.price_history = Some(points);
                     self.state.chart_loading = false;
                 }
                 ChartResult::Error(_e) => {
                     self.state.chart_loading = false;
+                    self.state.range_stats = None;
+                }
+            }
+        }
+
+        // Drain news data channel (#6)
+        while let Ok(result) = self.news_rx.try_recv() {
+            match result {
+                NewsResult::Data(items) => {
+                    self.state.news_items = items;
+                    self.state.news_loading = false;
+                }
+                NewsResult::Error(_e) => {
+                    self.state.news_loading = false;
                 }
             }
         }
@@ -497,6 +544,7 @@ impl MarketPlugin {
             KeyCode::Enter => {
                 // Open detail view for selected coin
                 if let Some(coin) = self.state.selected_coin().cloned() {
+                    let coin_name = coin.name.clone();
                     self.state.detail_coin = Some(coin.clone());
                     self.state.view = MarketView::Detail;
                     self.state.ai_analysis = None;
@@ -504,7 +552,10 @@ impl MarketPlugin {
                     self.state.detail_scroll = 0;
                     self.state.chart_loading = true;
                     self.state.price_history = None;
+                    self.state.news_loading = true;
+                    self.state.news_items.clear();
                     self.fetch_chart(&coin.symbol, &self.state.chart_range.clone());
+                    self.fetch_news(&coin_name);
                 }
                 PluginAction::Consumed
             }

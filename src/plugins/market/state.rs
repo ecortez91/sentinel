@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 pub use super::models::ChartRange;
-use super::models::{CoinMarket, PricePoint};
+use super::models::{CoinMarket, NewsItem, PricePoint, RangeStats};
 
 /// Which view is active in the market tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +77,14 @@ pub struct MarketState {
     pub chart_loading: bool,
     pub ai_analysis: Option<String>,
     pub ai_loading: bool,
+    /// Computed range statistics from OHLC history (#7).
+    pub range_stats: Option<RangeStats>,
+
+    // ── News feed (#6) ─────────────────────────────────────────
+    /// Cached news items from CryptoCompare.
+    pub news_items: Vec<NewsItem>,
+    /// Whether news is currently being fetched.
+    pub news_loading: bool,
 
     // ── Loading / error ──────────────────────────────────────
     pub loading: bool,
@@ -108,6 +116,9 @@ impl MarketState {
             chart_loading: false,
             ai_analysis: None,
             ai_loading: false,
+            range_stats: None,
+            news_items: Vec::new(),
+            news_loading: false,
             loading: true,
             error: None,
             last_updated: None,
@@ -123,8 +134,7 @@ impl MarketState {
             self.coins
                 .iter()
                 .filter(|c| {
-                    c.name.to_lowercase().contains(&q)
-                        || c.symbol.to_lowercase().contains(&q)
+                    c.name.to_lowercase().contains(&q) || c.symbol.to_lowercase().contains(&q)
                 })
                 .collect()
         } else {
