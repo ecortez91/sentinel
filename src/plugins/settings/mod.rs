@@ -78,6 +78,7 @@ pub enum SettingsCategory {
     Market,
     Thermal,
     Alerts,
+    Security,
     Notifications,
 }
 
@@ -88,6 +89,7 @@ impl SettingsCategory {
             SettingsCategory::Market,
             SettingsCategory::Thermal,
             SettingsCategory::Alerts,
+            SettingsCategory::Security,
             SettingsCategory::Notifications,
         ]
     }
@@ -98,6 +100,7 @@ impl SettingsCategory {
             SettingsCategory::Market => "Market",
             SettingsCategory::Thermal => "Thermal",
             SettingsCategory::Alerts => "Alerts",
+            SettingsCategory::Security => "Security",
             SettingsCategory::Notifications => "Notifications",
         }
     }
@@ -210,6 +213,18 @@ impl SettingsPlugin {
                             suffix: " sec".into(),
                             integer: true,
                         },
+                    },
+                    SettingItem {
+                        key: "unicode_mode".into(),
+                        label: "Glyph Mode".into(),
+                        value: config.unicode_mode.clone(),
+                        description: "Character rendering: auto, unicode, or ascii (#17)".into(),
+                        kind: SettingKind::Cycle(
+                            vec!["auto", "unicode", "ascii"]
+                                .into_iter()
+                                .map(String::from)
+                                .collect(),
+                        ),
                     },
                 ],
             ),
@@ -339,6 +354,42 @@ impl SettingsPlugin {
                         description: "Enable thermal auto-shutdown".into(),
                         kind: SettingKind::Toggle,
                     },
+                    SettingItem {
+                        key: "thermal.sustained_seconds".into(),
+                        label: "Sustained Secs".into(),
+                        value: format!("{}", config.thermal.sustained_seconds),
+                        description: "Seconds at emergency temp before shutdown (#18)".into(),
+                        kind: SettingKind::Number {
+                            min: 5.0,
+                            max: 300.0,
+                            suffix: " sec".into(),
+                            integer: true,
+                        },
+                    },
+                    SettingItem {
+                        key: "thermal.shutdown_schedule_start".into(),
+                        label: "Schedule Start".into(),
+                        value: format!("{}", config.thermal.shutdown_schedule_start),
+                        description: "Hour (0-23) when shutdown protection begins (#18)".into(),
+                        kind: SettingKind::Number {
+                            min: 0.0,
+                            max: 23.0,
+                            suffix: "h".into(),
+                            integer: true,
+                        },
+                    },
+                    SettingItem {
+                        key: "thermal.shutdown_schedule_end".into(),
+                        label: "Schedule End".into(),
+                        value: format!("{}", config.thermal.shutdown_schedule_end),
+                        description: "Hour (0-24) when shutdown protection ends (#18)".into(),
+                        kind: SettingKind::Number {
+                            min: 0.0,
+                            max: 24.0,
+                            suffix: "h".into(),
+                            integer: true,
+                        },
+                    },
                 ],
             ),
             (
@@ -381,6 +432,42 @@ impl SettingsPlugin {
                         },
                     },
                     SettingItem {
+                        key: "mem_critical_threshold_mib".into(),
+                        label: "Mem Critical".into(),
+                        value: format!("{}", config.mem_critical_threshold_bytes / (1024 * 1024)),
+                        description: "Per-process memory critical threshold (MiB) (#19)".into(),
+                        kind: SettingKind::Number {
+                            min: 64.0,
+                            max: 65536.0,
+                            suffix: " MiB".into(),
+                            integer: true,
+                        },
+                    },
+                    SettingItem {
+                        key: "sys_mem_warning_percent".into(),
+                        label: "Sys Mem Warn".into(),
+                        value: format!("{:.0}", config.sys_mem_warning_percent),
+                        description: "System memory warning threshold (%) (#19)".into(),
+                        kind: SettingKind::Number {
+                            min: 1.0,
+                            max: 100.0,
+                            suffix: "%".into(),
+                            integer: false,
+                        },
+                    },
+                    SettingItem {
+                        key: "sys_mem_critical_percent".into(),
+                        label: "Sys Mem Crit".into(),
+                        value: format!("{:.0}", config.sys_mem_critical_percent),
+                        description: "System memory critical threshold (%) (#19)".into(),
+                        kind: SettingKind::Number {
+                            min: 1.0,
+                            max: 100.0,
+                            suffix: "%".into(),
+                            integer: false,
+                        },
+                    },
+                    SettingItem {
                         key: "max_alerts".into(),
                         label: "Max Alerts".into(),
                         value: format!("{}", config.max_alerts),
@@ -391,6 +478,61 @@ impl SettingsPlugin {
                             suffix: "".into(),
                             integer: true,
                         },
+                    },
+                ],
+            ),
+            (
+                SettingsCategory::Security,
+                vec![
+                    SettingItem {
+                        key: "security.ssh_brute_force_threshold".into(),
+                        label: "SSH Threshold".into(),
+                        value: format!("{}", config.security.ssh_brute_force_threshold),
+                        description: "Failed SSH attempts to flag as brute-force (#16)".into(),
+                        kind: SettingKind::Number {
+                            min: 1.0,
+                            max: 100.0,
+                            suffix: "".into(),
+                            integer: true,
+                        },
+                    },
+                    SettingItem {
+                        key: "security.score_alert_threshold".into(),
+                        label: "Score Alert".into(),
+                        value: format!("{}", config.security.score_alert_threshold),
+                        description: "Alert when security score drops below this (#16)".into(),
+                        kind: SettingKind::Number {
+                            min: 0.0,
+                            max: 100.0,
+                            suffix: "".into(),
+                            integer: true,
+                        },
+                    },
+                    SettingItem {
+                        key: "security.max_suspicious_outbound".into(),
+                        label: "Max Outbound".into(),
+                        value: format!("{}", config.security.max_suspicious_outbound),
+                        description: "Max suspicious outbound connections to track (#16)".into(),
+                        kind: SettingKind::Number {
+                            min: 1.0,
+                            max: 500.0,
+                            suffix: "".into(),
+                            integer: true,
+                        },
+                    },
+                    SettingItem {
+                        key: "suspicious_patterns".into(),
+                        label: "Suspicious Procs".into(),
+                        value: format!("{} patterns", config.suspicious_patterns.len()),
+                        description: "Edit process patterns in config.toml".into(),
+                        kind: SettingKind::ReadOnly,
+                    },
+                    SettingItem {
+                        key: "security_threat_patterns".into(),
+                        label: "Threat Patterns".into(),
+                        value: format!("{} patterns", config.security_threat_patterns.len()),
+                        description: "Edit threat patterns in config.toml".into(),
+                        kind: SettingKind::ReadOnly,
                     },
                 ],
             ),
@@ -638,6 +780,10 @@ impl SettingsPlugin {
                     false
                 }
             }
+            "unicode_mode" => {
+                config.unicode_mode = value.to_string();
+                true
+            }
             // ── Market ───────────────────────────────────────────
             "market.enabled" => {
                 config.market.enabled = value == "true";
@@ -714,6 +860,30 @@ impl SettingsPlugin {
                 config.thermal.auto_shutdown_enabled = value == "true";
                 true
             }
+            "thermal.sustained_seconds" => {
+                if let Ok(v) = value.parse::<u64>() {
+                    config.thermal.sustained_seconds = v.max(5);
+                    true
+                } else {
+                    false
+                }
+            }
+            "thermal.shutdown_schedule_start" => {
+                if let Ok(v) = value.parse::<u8>() {
+                    config.thermal.shutdown_schedule_start = v.min(23);
+                    true
+                } else {
+                    false
+                }
+            }
+            "thermal.shutdown_schedule_end" => {
+                if let Ok(v) = value.parse::<u8>() {
+                    config.thermal.shutdown_schedule_end = v.min(24);
+                    true
+                } else {
+                    false
+                }
+            }
             // ── Alerts ───────────────────────────────────────────
             "cpu_warning_threshold" => {
                 if let Ok(v) = value.parse::<f32>() {
@@ -739,9 +909,58 @@ impl SettingsPlugin {
                     false
                 }
             }
+            "mem_critical_threshold_mib" => {
+                if let Ok(v) = value.parse::<u64>() {
+                    config.mem_critical_threshold_bytes = v.max(64) * 1024 * 1024;
+                    true
+                } else {
+                    false
+                }
+            }
+            "sys_mem_warning_percent" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    config.sys_mem_warning_percent = v.clamp(1.0, 100.0);
+                    true
+                } else {
+                    false
+                }
+            }
+            "sys_mem_critical_percent" => {
+                if let Ok(v) = value.parse::<f32>() {
+                    config.sys_mem_critical_percent = v.clamp(1.0, 100.0);
+                    true
+                } else {
+                    false
+                }
+            }
             "max_alerts" => {
                 if let Ok(v) = value.parse::<usize>() {
                     config.max_alerts = v.max(10);
+                    true
+                } else {
+                    false
+                }
+            }
+            // ── Security (#16) ───────────────────────────────────
+            "security.ssh_brute_force_threshold" => {
+                if let Ok(v) = value.parse::<usize>() {
+                    config.security.ssh_brute_force_threshold = v.max(1);
+                    true
+                } else {
+                    false
+                }
+            }
+            "security.score_alert_threshold" => {
+                if let Ok(v) = value.parse::<u8>() {
+                    config.security.score_alert_threshold = v.min(100);
+                    true
+                } else {
+                    false
+                }
+            }
+            "security.max_suspicious_outbound" => {
+                if let Ok(v) = value.parse::<usize>() {
+                    config.security.max_suspicious_outbound = v.max(1);
                     true
                 } else {
                     false
@@ -1014,8 +1233,8 @@ mod tests {
     #[test]
     fn toggle_notification_produces_config_changed() {
         let mut plugin = default_plugin();
-        // Navigate to Notifications > Email Enabled (category 4, item 0)
-        plugin.selected_category = 4;
+        // Navigate to Notifications > Email Enabled (category 5, item 0)
+        plugin.selected_category = 5;
         plugin.selected_item = 0;
 
         let was_enabled = plugin.config.notifications.email_enabled;
@@ -1440,6 +1659,248 @@ mod tests {
         assert_eq!(
             config.thermal.lhm_url,
             "http://192.168.1.100:8085/data.json"
+        );
+    }
+
+    // ── Security settings (#16) ──────────────────────────────
+
+    #[test]
+    fn apply_ssh_brute_force_threshold() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "security.ssh_brute_force_threshold",
+            "10"
+        ));
+        assert_eq!(config.security.ssh_brute_force_threshold, 10);
+    }
+
+    #[test]
+    fn apply_ssh_threshold_enforces_minimum() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "security.ssh_brute_force_threshold",
+            "0"
+        ));
+        assert_eq!(config.security.ssh_brute_force_threshold, 1);
+    }
+
+    #[test]
+    fn apply_score_alert_threshold() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "security.score_alert_threshold",
+            "50"
+        ));
+        assert_eq!(config.security.score_alert_threshold, 50);
+    }
+
+    #[test]
+    fn apply_score_alert_threshold_clamps_max() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "security.score_alert_threshold",
+            "200"
+        ));
+        assert_eq!(config.security.score_alert_threshold, 100);
+    }
+
+    #[test]
+    fn apply_max_suspicious_outbound() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "security.max_suspicious_outbound",
+            "100"
+        ));
+        assert_eq!(config.security.max_suspicious_outbound, 100);
+    }
+
+    #[test]
+    fn security_category_exists_in_settings_list() {
+        let plugin = default_plugin();
+        let security_cat = plugin
+            .settings
+            .iter()
+            .find(|(cat, _)| *cat == SettingsCategory::Security);
+        assert!(
+            security_cat.is_some(),
+            "Security category should exist in settings"
+        );
+        let (_, items) = security_cat.unwrap();
+        assert!(items.len() >= 3, "Security should have at least 3 items");
+    }
+
+    // ── Glyph mode (#17) ────────────────────────────────────
+
+    #[test]
+    fn apply_unicode_mode() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "unicode_mode",
+            "ascii"
+        ));
+        assert_eq!(config.unicode_mode, "ascii");
+    }
+
+    #[test]
+    fn glyph_mode_in_general_category() {
+        let plugin = default_plugin();
+        let general_items = &plugin.settings[0].1;
+        let glyph_item = general_items.iter().find(|i| i.key == "unicode_mode");
+        assert!(
+            glyph_item.is_some(),
+            "unicode_mode should be in General settings"
+        );
+        assert_eq!(glyph_item.unwrap().value, "auto");
+    }
+
+    // ── Thermal schedule (#18) ───────────────────────────────
+
+    #[test]
+    fn apply_sustained_seconds() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "thermal.sustained_seconds",
+            "60"
+        ));
+        assert_eq!(config.thermal.sustained_seconds, 60);
+    }
+
+    #[test]
+    fn apply_sustained_seconds_enforces_minimum() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "thermal.sustained_seconds",
+            "2"
+        ));
+        assert_eq!(config.thermal.sustained_seconds, 5);
+    }
+
+    #[test]
+    fn apply_shutdown_schedule_start() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "thermal.shutdown_schedule_start",
+            "8"
+        ));
+        assert_eq!(config.thermal.shutdown_schedule_start, 8);
+    }
+
+    #[test]
+    fn apply_shutdown_schedule_start_clamps() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "thermal.shutdown_schedule_start",
+            "25"
+        ));
+        assert_eq!(config.thermal.shutdown_schedule_start, 23);
+    }
+
+    #[test]
+    fn apply_shutdown_schedule_end() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "thermal.shutdown_schedule_end",
+            "18"
+        ));
+        assert_eq!(config.thermal.shutdown_schedule_end, 18);
+    }
+
+    #[test]
+    fn thermal_schedule_items_exist() {
+        let plugin = default_plugin();
+        let thermal_items = &plugin.settings[2].1;
+        assert!(
+            thermal_items
+                .iter()
+                .any(|i| i.key == "thermal.sustained_seconds"),
+            "sustained_seconds should be in Thermal settings"
+        );
+        assert!(
+            thermal_items
+                .iter()
+                .any(|i| i.key == "thermal.shutdown_schedule_start"),
+            "shutdown_schedule_start should be in Thermal settings"
+        );
+        assert!(
+            thermal_items
+                .iter()
+                .any(|i| i.key == "thermal.shutdown_schedule_end"),
+            "shutdown_schedule_end should be in Thermal settings"
+        );
+    }
+
+    // ── Alert thresholds (#19) ───────────────────────────────
+
+    #[test]
+    fn apply_mem_critical_threshold() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "mem_critical_threshold_mib",
+            "4096"
+        ));
+        assert_eq!(config.mem_critical_threshold_bytes, 4096 * 1024 * 1024);
+    }
+
+    #[test]
+    fn apply_sys_mem_warning_percent() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "sys_mem_warning_percent",
+            "80"
+        ));
+        assert_eq!(config.sys_mem_warning_percent, 80.0);
+    }
+
+    #[test]
+    fn apply_sys_mem_critical_percent() {
+        let mut config = Config::default();
+        assert!(SettingsPlugin::apply_to_config(
+            &mut config,
+            "sys_mem_critical_percent",
+            "95"
+        ));
+        assert_eq!(config.sys_mem_critical_percent, 95.0);
+    }
+
+    #[test]
+    fn apply_sys_mem_percent_clamps() {
+        let mut config = Config::default();
+        SettingsPlugin::apply_to_config(&mut config, "sys_mem_warning_percent", "0");
+        assert_eq!(config.sys_mem_warning_percent, 1.0);
+
+        SettingsPlugin::apply_to_config(&mut config, "sys_mem_critical_percent", "200");
+        assert_eq!(config.sys_mem_critical_percent, 100.0);
+    }
+
+    #[test]
+    fn alert_thresholds_all_present() {
+        let plugin = default_plugin();
+        let alerts_items = &plugin.settings[3].1;
+        let keys: Vec<&str> = alerts_items.iter().map(|i| i.key.as_str()).collect();
+        assert!(
+            keys.contains(&"mem_critical_threshold_mib"),
+            "Missing mem_critical"
+        );
+        assert!(
+            keys.contains(&"sys_mem_warning_percent"),
+            "Missing sys_mem_warning"
+        );
+        assert!(
+            keys.contains(&"sys_mem_critical_percent"),
+            "Missing sys_mem_critical"
         );
     }
 }

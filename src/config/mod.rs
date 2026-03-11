@@ -44,6 +44,8 @@ pub struct Config {
     pub notifications: NotificationConfig,
     /// Market data plugin configuration
     pub market: MarketConfig,
+    /// Security monitoring configuration (#16)
+    pub security: SecurityConfig,
 }
 
 /// Thermal monitoring settings (LibreHardwareMonitor integration).
@@ -121,6 +123,27 @@ impl Default for MarketConfig {
     }
 }
 
+/// Security monitoring settings (#16).
+#[derive(Debug, Clone)]
+pub struct SecurityConfig {
+    /// Number of failed SSH login attempts from one IP to flag as brute-force.
+    pub ssh_brute_force_threshold: usize,
+    /// Security score threshold — alert when score drops below this.
+    pub score_alert_threshold: u8,
+    /// Maximum suspicious outbound connections to track.
+    pub max_suspicious_outbound: usize,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            ssh_brute_force_threshold: SSH_BRUTE_FORCE_THRESHOLD,
+            score_alert_threshold: SECURITY_SCORE_ALERT_THRESHOLD,
+            max_suspicious_outbound: MAX_SUSPICIOUS_OUTBOUND,
+        }
+    }
+}
+
 /// Notification settings (email + Telegram).
 #[derive(Debug, Clone)]
 pub struct NotificationConfig {
@@ -193,6 +216,7 @@ impl Default for Config {
             thermal: ThermalConfig::default(),
             notifications: NotificationConfig::default(),
             market: MarketConfig::default(),
+            security: SecurityConfig::default(),
         }
     }
 }
@@ -221,6 +245,7 @@ pub(crate) struct FileConfig {
     pub(crate) thermal: Option<FileThermalConfig>,
     pub(crate) notifications: Option<FileNotificationConfig>,
     pub(crate) market: Option<FileMarketConfig>,
+    pub(crate) security: Option<FileSecurityConfig>,
 }
 
 /// TOML-deserializable thermal config section.
@@ -249,6 +274,15 @@ pub(crate) struct FileNotificationConfig {
     pub(crate) telegram_bot_token: Option<String>,
     pub(crate) telegram_chat_id: Option<String>,
     pub(crate) telegram_min_severity: Option<String>,
+}
+
+/// TOML-deserializable security config section (#16).
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct FileSecurityConfig {
+    pub(crate) ssh_brute_force_threshold: Option<usize>,
+    pub(crate) score_alert_threshold: Option<u8>,
+    pub(crate) max_suspicious_outbound: Option<usize>,
 }
 
 /// TOML-deserializable market config section.
@@ -422,6 +456,19 @@ impl Config {
             }
         }
 
+        // Merge security config (#16)
+        if let Some(s) = file_config.security {
+            if let Some(v) = s.ssh_brute_force_threshold {
+                config.security.ssh_brute_force_threshold = v.max(1);
+            }
+            if let Some(v) = s.score_alert_threshold {
+                config.security.score_alert_threshold = v.min(100);
+            }
+            if let Some(v) = s.max_suspicious_outbound {
+                config.security.max_suspicious_outbound = v.max(1);
+            }
+        }
+
         config
     }
 
@@ -492,6 +539,7 @@ struct WriteConfig {
     thermal: WriteThermalConfig,
     notifications: WriteNotificationConfig,
     market: WriteMarketConfig,
+    security: WriteSecurityConfig,
 }
 
 #[derive(Debug, Serialize)]
@@ -523,6 +571,13 @@ struct WriteNotificationConfig {
 }
 
 #[derive(Debug, Serialize)]
+struct WriteSecurityConfig {
+    ssh_brute_force_threshold: usize,
+    score_alert_threshold: u8,
+    max_suspicious_outbound: usize,
+}
+
+#[derive(Debug, Serialize)]
 struct WriteMarketConfig {
     enabled: bool,
     poll_interval_secs: u64,
@@ -551,6 +606,7 @@ impl From<&Config> for WriteConfig {
             thermal: WriteThermalConfig::from(&c.thermal),
             notifications: WriteNotificationConfig::from(&c.notifications),
             market: WriteMarketConfig::from(&c.market),
+            security: WriteSecurityConfig::from(&c.security),
         }
     }
 }
@@ -581,6 +637,16 @@ impl From<&NotificationConfig> for WriteNotificationConfig {
             telegram_bot_token: n.telegram_bot_token.clone(),
             telegram_chat_id: n.telegram_chat_id.clone(),
             telegram_min_severity: n.telegram_min_severity.clone(),
+        }
+    }
+}
+
+impl From<&SecurityConfig> for WriteSecurityConfig {
+    fn from(s: &SecurityConfig) -> Self {
+        Self {
+            ssh_brute_force_threshold: s.ssh_brute_force_threshold,
+            score_alert_threshold: s.score_alert_threshold,
+            max_suspicious_outbound: s.max_suspicious_outbound,
         }
     }
 }
