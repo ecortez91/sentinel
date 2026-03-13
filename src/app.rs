@@ -433,6 +433,12 @@ impl App {
             self.tick_auto_analysis();
             self.tick_shutdown();
 
+            // Deferred process detail loading (#22): heavy /proc I/O
+            // runs inline on the next tick after popup opens.
+            if self.state.detail_pending_pid.is_some() {
+                self.state.load_process_detail_extra();
+            }
+
             // ── 4. Render ────────────────────────────────────────
             terminal.draw(|frame| ui::render_with_plugins(frame, &self.state, Some(&self.plugins)))?;
         }

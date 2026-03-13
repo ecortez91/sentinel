@@ -289,6 +289,10 @@ pub struct AppState {
     pub show_process_detail: bool,
     pub process_detail: Option<ProcessDetail>,
     pub detail_scroll: usize,
+    /// Whether the detail popup is still loading heavy data (FDs, environ) (#22).
+    pub detail_loading: bool,
+    /// PID pending background detail load (set on open, cleared after load).
+    pub detail_pending_pid: Option<u32>,
 
     // ── Process tree view ────────────────────────────────────────
     pub tree_view: bool,
@@ -418,6 +422,8 @@ impl AppState {
             show_process_detail: false,
             process_detail: None,
             detail_scroll: 0,
+            detail_loading: false,
+            detail_pending_pid: None,
             tree_view: false,
             cpu_history: VecDeque::with_capacity(HISTORY_CAPACITY),
             mem_history: VecDeque::with_capacity(HISTORY_CAPACITY),
@@ -794,10 +800,53 @@ impl AppState {
         }
     }
 
-    /// Populate the process detail popup from a selected process.
-    /// Reads /proc/<pid>/fd and /proc/<pid>/environ for extra info.
+    /// Open the process detail popup immediately with basic info (#22).
+    ///
+    /// Shows the popup right away with PID, name, CPU, memory, etc.
+    /// File descriptors and environment variables are deferred to
+    /// [`load_process_detail_extra`] which runs on the next tick,
+    /// keeping the event loop responsive.
     pub fn open_process_detail(&mut self, proc_info: &ProcessInfo) {
         let pid = proc_info.pid;
+
+        self.process_detail = Some(ProcessDetail {
+            pid,
+            name: proc_info.name.clone(),
+            cmd: proc_info.cmd.clone(),
+            cpu_usage: proc_info.cpu_usage,
+            memory_bytes: proc_info.memory_bytes,
+            memory_percent: proc_info.memory_percent,
+            status: proc_info.status.to_string(),
+            user: proc_info.user.clone(),
+            parent_pid: proc_info.parent_pid,
+            thread_count: proc_info.thread_count,
+            start_time: proc_info.start_time,
+            open_fds: 0,
+            fd_sample: Vec::new(),
+            environ: Vec::new(),
+        });
+        self.show_process_detail = true;
+        self.detail_loading = true;
+        self.detail_pending_pid = Some(pid);
+        self.detail_scroll = 0;
+    }
+
+    /// Load the heavy /proc data (FDs + environ) for the open detail popup (#22).
+    ///
+    /// Called from the event loop on the next tick after [`open_process_detail`].
+    /// Runs inline on the main thread (no `spawn_blocking`) to avoid WSL2
+    /// scheduler contention with `epoll_wait()`.
+    pub fn load_process_detail_extra(&mut self) {
+        let pid = match self.detail_pending_pid.take() {
+            Some(pid) => pid,
+            None => return,
+        };
+
+        // If the popup was closed before we got here, bail out
+        if !self.show_process_detail {
+            self.detail_loading = false;
+            return;
+        }
 
         // Read open file descriptors from /proc/<pid>/fd
         let fd_path = format!("/proc/{}/fd", pid);
@@ -843,30 +892,24 @@ impl AppState {
             Err(_) => vec!["(permission denied)".to_string()],
         };
 
-        self.process_detail = Some(ProcessDetail {
-            pid,
-            name: proc_info.name.clone(),
-            cmd: proc_info.cmd.clone(),
-            cpu_usage: proc_info.cpu_usage,
-            memory_bytes: proc_info.memory_bytes,
-            memory_percent: proc_info.memory_percent,
-            status: proc_info.status.to_string(),
-            user: proc_info.user.clone(),
-            parent_pid: proc_info.parent_pid,
-            thread_count: proc_info.thread_count,
-            start_time: proc_info.start_time,
-            open_fds,
-            fd_sample,
-            environ,
-        });
-        self.show_process_detail = true;
-        self.detail_scroll = 0;
+        // Update the detail with the loaded data
+        if let Some(ref mut detail) = self.process_detail {
+            if detail.pid == pid {
+                detail.open_fds = open_fds;
+                detail.fd_sample = fd_sample;
+                detail.environ = environ;
+            }
+        }
+
+        self.detail_loading = false;
     }
 
     pub fn close_process_detail(&mut self) {
         self.show_process_detail = false;
         self.process_detail = None;
         self.detail_scroll = 0;
+        self.detail_loading = false;
+        self.detail_pending_pid = None;
     }
 
     /// Build a flattened process tree for display.
@@ -1939,5 +1982,119 @@ mod tests {
         assert!(cr.has_executable_actions());
         assert!(cr.actions[0].0.contains("/tmp/cache"));
         assert!(cr.actions[0].0.contains("GB"));
+    }
+
+    // ── Process detail background loading (#22) ──────────────────
+
+    fn make_test_process() -> ProcessInfo {
+        ProcessInfo {
+            pid: std::process::id(),
+            name: "test".to_string(),
+            cmd: "/usr/bin/test --arg".to_string(),
+            cpu_usage: 12.5,
+            memory_bytes: 1024 * 1024 * 50,
+            memory_percent: 2.5,
+            status: crate::models::ProcessStatus::Running,
+            user: "tester".to_string(),
+            parent_pid: Some(1),
+            thread_count: Some(4),
+            start_time: 0,
+            disk_read_bytes: 0,
+            disk_write_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn open_process_detail_sets_loading_true() {
+        let mut state = make_state();
+        let proc = make_test_process();
+
+        state.open_process_detail(&proc);
+
+        assert!(state.show_process_detail);
+        assert!(state.detail_loading);
+        assert_eq!(state.detail_pending_pid, Some(proc.pid));
+        assert_eq!(state.detail_scroll, 0);
+
+        // Basic info should be populated immediately
+        let detail = state.process_detail.as_ref().unwrap();
+        assert_eq!(detail.pid, proc.pid);
+        assert_eq!(detail.name, "test");
+        assert_eq!(detail.cpu_usage, 12.5);
+
+        // FDs and environ should be empty (not yet loaded)
+        assert_eq!(detail.open_fds, 0);
+        assert!(detail.fd_sample.is_empty());
+        assert!(detail.environ.is_empty());
+    }
+
+    #[test]
+    fn load_process_detail_extra_populates_fds_and_environ() {
+        let mut state = make_state();
+        let proc = make_test_process();
+
+        state.open_process_detail(&proc);
+        assert!(state.detail_loading);
+
+        // Simulate what the event loop does on the next tick
+        state.load_process_detail_extra();
+
+        assert!(!state.detail_loading);
+        assert!(state.detail_pending_pid.is_none());
+
+        // After loading, FDs and/or environ should be populated
+        // (for our own process, we should get at least stdin/stdout/stderr)
+        let detail = state.process_detail.as_ref().unwrap();
+        assert!(
+            detail.open_fds > 0 || detail.environ.len() > 0,
+            "At least FDs or environ should be populated for own process"
+        );
+    }
+
+    #[test]
+    fn close_process_detail_clears_loading_state() {
+        let mut state = make_state();
+        let proc = make_test_process();
+
+        state.open_process_detail(&proc);
+        assert!(state.detail_loading);
+        assert!(state.detail_pending_pid.is_some());
+
+        state.close_process_detail();
+
+        assert!(!state.show_process_detail);
+        assert!(state.process_detail.is_none());
+        assert!(!state.detail_loading);
+        assert!(state.detail_pending_pid.is_none());
+    }
+
+    #[test]
+    fn load_extra_does_nothing_when_popup_closed_before_load() {
+        let mut state = make_state();
+        let proc = make_test_process();
+
+        state.open_process_detail(&proc);
+        // Close before the deferred load runs
+        state.close_process_detail();
+
+        // Re-set pending to simulate a race (shouldn't happen, but be safe)
+        state.detail_pending_pid = Some(proc.pid);
+        state.load_process_detail_extra();
+
+        // Should bail out gracefully
+        assert!(!state.detail_loading);
+        assert!(state.detail_pending_pid.is_none());
+    }
+
+    #[test]
+    fn load_extra_noop_when_no_pending() {
+        let mut state = make_state();
+
+        // No pending PID — should do nothing
+        state.load_process_detail_extra();
+
+        assert!(!state.detail_loading);
+        assert!(state.detail_pending_pid.is_none());
+        assert!(state.process_detail.is_none());
     }
 }

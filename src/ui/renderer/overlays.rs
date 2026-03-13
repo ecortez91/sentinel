@@ -102,44 +102,75 @@ pub fn render_process_detail(frame: &mut Frame, area: Rect, state: &AppState) {
     }
     lines.push(Line::raw(""));
 
-    // Open file descriptors
-    lines.push(Line::from(Span::styled(
-        format!(" Open File Descriptors ({})", detail.open_fds),
-        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-    )));
-    for fd in &detail.fd_sample {
-        lines.push(Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(truncate_str(fd, cmd_width), Style::default().fg(t.text_dim)),
-        ]));
-    }
-    if detail.open_fds > detail.fd_sample.len() {
+    // Open file descriptors (#22: show loading state while deferred)
+    if state.detail_loading {
+        lines.push(Line::from(Span::styled(
+            " Open File Descriptors",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        )));
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(
-                format!(
-                    "  ... and {} more",
-                    detail.open_fds - detail.fd_sample.len()
-                ),
-                Style::default().fg(t.text_muted),
+                format!("  Loading{}", crate::utils::loading_dots(state.tick_count)),
+                Style::default()
+                    .fg(t.text_muted)
+                    .add_modifier(Modifier::ITALIC),
             ),
         ]));
-    }
-    lines.push(Line::raw(""));
+        lines.push(Line::raw(""));
 
-    // Environment variables
-    lines.push(Line::from(Span::styled(
-        format!(" Environment Variables ({})", detail.environ.len()),
-        Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-    )));
-    for var in &detail.environ {
+        lines.push(Line::from(Span::styled(
+            " Environment Variables",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        )));
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(
-                truncate_str(var, cmd_width),
-                Style::default().fg(t.text_dim),
+                format!("  Loading{}", crate::utils::loading_dots(state.tick_count)),
+                Style::default()
+                    .fg(t.text_muted)
+                    .add_modifier(Modifier::ITALIC),
             ),
         ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            format!(" Open File Descriptors ({})", detail.open_fds),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        )));
+        for fd in &detail.fd_sample {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(truncate_str(fd, cmd_width), Style::default().fg(t.text_dim)),
+            ]));
+        }
+        if detail.open_fds > detail.fd_sample.len() {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(
+                    format!(
+                        "  ... and {} more",
+                        detail.open_fds - detail.fd_sample.len()
+                    ),
+                    Style::default().fg(t.text_muted),
+                ),
+            ]));
+        }
+        lines.push(Line::raw(""));
+
+        // Environment variables
+        lines.push(Line::from(Span::styled(
+            format!(" Environment Variables ({})", detail.environ.len()),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        )));
+        for var in &detail.environ {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(
+                    truncate_str(var, cmd_width),
+                    Style::default().fg(t.text_dim),
+                ),
+            ]));
+        }
     }
 
     // Apply scrolling
