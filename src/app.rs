@@ -30,6 +30,7 @@ use crate::notifications::telegram::TelegramNotifier;
 use crate::plugins::market::MarketPlugin;
 use crate::plugins::registry::PluginRegistry;
 use crate::plugins::settings::SettingsPlugin;
+use crate::plugins::windows::WindowsPlugin;
 use crate::plugins::PluginAction;
 use crate::thermal::LhmClient;
 use crate::thermal::shutdown::{ShutdownEvent, ShutdownManager};
@@ -319,6 +320,14 @@ impl App {
             favorites,
         );
         plugins.register(Box::new(market_plugin));
+
+        // Register Windows host monitoring plugin (#1)
+        let windows_plugin = WindowsPlugin::new(
+            config.windows.enabled,
+            config.windows.agent_url.clone(),
+            config.windows.poll_interval_secs,
+        );
+        plugins.register(Box::new(windows_plugin));
 
         // Register Settings plugin (always enabled)
         let settings_plugin = SettingsPlugin::new(true);

@@ -46,6 +46,8 @@ pub struct Config {
     pub market: MarketConfig,
     /// Security monitoring configuration (#16)
     pub security: SecurityConfig,
+    /// Windows host monitoring configuration (#1)
+    pub windows: WindowsConfig,
 }
 
 /// Thermal monitoring settings (LibreHardwareMonitor integration).
@@ -144,6 +146,27 @@ impl Default for SecurityConfig {
     }
 }
 
+/// Windows host monitoring settings (#1 — sentinel-agent integration).
+#[derive(Debug, Clone)]
+pub struct WindowsConfig {
+    /// Whether the Windows host monitoring plugin is enabled.
+    pub enabled: bool,
+    /// Sentinel-agent HTTP snapshot endpoint URL.
+    pub agent_url: String,
+    /// Polling interval in seconds.
+    pub poll_interval_secs: u64,
+}
+
+impl Default for WindowsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            agent_url: DEFAULT_AGENT_URL.to_string(),
+            poll_interval_secs: DEFAULT_AGENT_POLL_SECS,
+        }
+    }
+}
+
 /// Notification settings (email + Telegram).
 #[derive(Debug, Clone)]
 pub struct NotificationConfig {
@@ -217,6 +240,7 @@ impl Default for Config {
             notifications: NotificationConfig::default(),
             market: MarketConfig::default(),
             security: SecurityConfig::default(),
+            windows: WindowsConfig::default(),
         }
     }
 }
@@ -246,6 +270,7 @@ pub(crate) struct FileConfig {
     pub(crate) notifications: Option<FileNotificationConfig>,
     pub(crate) market: Option<FileMarketConfig>,
     pub(crate) security: Option<FileSecurityConfig>,
+    pub(crate) windows: Option<FileWindowsConfig>,
 }
 
 /// TOML-deserializable thermal config section.
@@ -283,6 +308,15 @@ pub(crate) struct FileSecurityConfig {
     pub(crate) ssh_brute_force_threshold: Option<usize>,
     pub(crate) score_alert_threshold: Option<u8>,
     pub(crate) max_suspicious_outbound: Option<usize>,
+}
+
+/// TOML-deserializable Windows host config section (#1).
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct FileWindowsConfig {
+    pub(crate) enabled: Option<bool>,
+    pub(crate) agent_url: Option<String>,
+    pub(crate) poll_interval_secs: Option<u64>,
 }
 
 /// TOML-deserializable market config section.
@@ -456,6 +490,21 @@ impl Config {
             }
         }
 
+        // Merge windows host config (#1)
+        if let Some(w) = file_config.windows {
+            if let Some(v) = w.enabled {
+                config.windows.enabled = v;
+            }
+            if let Some(v) = w.agent_url {
+                if !v.is_empty() {
+                    config.windows.agent_url = v;
+                }
+            }
+            if let Some(v) = w.poll_interval_secs {
+                config.windows.poll_interval_secs = v.max(1);
+            }
+        }
+
         // Merge security config (#16)
         if let Some(s) = file_config.security {
             if let Some(v) = s.ssh_brute_force_threshold {
@@ -540,6 +589,7 @@ struct WriteConfig {
     notifications: WriteNotificationConfig,
     market: WriteMarketConfig,
     security: WriteSecurityConfig,
+    windows: WriteWindowsConfig,
 }
 
 #[derive(Debug, Serialize)]
@@ -578,6 +628,13 @@ struct WriteSecurityConfig {
 }
 
 #[derive(Debug, Serialize)]
+struct WriteWindowsConfig {
+    enabled: bool,
+    agent_url: String,
+    poll_interval_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
 struct WriteMarketConfig {
     enabled: bool,
     poll_interval_secs: u64,
@@ -607,6 +664,7 @@ impl From<&Config> for WriteConfig {
             notifications: WriteNotificationConfig::from(&c.notifications),
             market: WriteMarketConfig::from(&c.market),
             security: WriteSecurityConfig::from(&c.security),
+            windows: WriteWindowsConfig::from(&c.windows),
         }
     }
 }
@@ -647,6 +705,16 @@ impl From<&SecurityConfig> for WriteSecurityConfig {
             ssh_brute_force_threshold: s.ssh_brute_force_threshold,
             score_alert_threshold: s.score_alert_threshold,
             max_suspicious_outbound: s.max_suspicious_outbound,
+        }
+    }
+}
+
+impl From<&WindowsConfig> for WriteWindowsConfig {
+    fn from(w: &WindowsConfig) -> Self {
+        Self {
+            enabled: w.enabled,
+            agent_url: w.agent_url.clone(),
+            poll_interval_secs: w.poll_interval_secs,
         }
     }
 }

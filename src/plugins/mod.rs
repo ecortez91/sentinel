@@ -12,6 +12,7 @@
 pub mod market;
 pub mod registry;
 pub mod settings;
+pub mod windows;
 
 use crossterm::event::KeyEvent;
 use ratatui::{layout::Rect, Frame};

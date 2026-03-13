@@ -161,6 +161,18 @@ pub const CANDLE_COL_WIDTH: u16 = 2;
 /// Candlestick chart: price label width on the right axis.
 pub const CANDLE_PRICE_LABEL_WIDTH: u16 = 12;
 
+// ── Windows Host Agent ────────────────────────────────────────────
+/// Default sentinel-agent HTTP snapshot endpoint.
+pub const DEFAULT_AGENT_URL: &str = "http://localhost:8085/api/snapshot";
+/// Default sentinel-agent HTTP port.
+pub const DEFAULT_AGENT_PORT: u16 = 8085;
+/// Default polling interval for the Windows host agent (seconds).
+pub const DEFAULT_AGENT_POLL_SECS: u64 = 5;
+/// Environment variable: override agent snapshot URL entirely.
+pub const ENV_AGENT_URL: &str = "SENTINEL_AGENT_URL";
+/// Maximum top processes returned by the agent snapshot.
+pub const AGENT_MAX_TOP_PROCESSES: usize = 30;
+
 // ── Email Notifications ───────────────────────────────────────────
 /// Minimum interval between emails of the same event type (seconds).
 pub const EMAIL_RATE_LIMIT_SECS: u64 = 300;
