@@ -331,40 +331,7 @@ mod tests {
     }
 
     fn make_snapshot() -> WindowsHostSnapshot {
-        WindowsHostSnapshot {
-            hostname: "DESKTOP-TEST".into(),
-            os_version: "Windows 11".into(),
-            uptime_secs: 3600,
-            cpu_usage_pct: 25.0,
-            cpu_cores: 8,
-            total_memory_bytes: 16 * 1024 * 1024 * 1024,
-            used_memory_bytes: 8 * 1024 * 1024 * 1024,
-            top_processes: vec![
-                models::WindowsProcessInfo {
-                    pid: 100,
-                    name: "chrome.exe".into(),
-                    cpu_pct: 10.0,
-                    memory_bytes: 500 * 1024 * 1024,
-                    status: "Running".into(),
-                },
-                models::WindowsProcessInfo {
-                    pid: 200,
-                    name: "code.exe".into(),
-                    cpu_pct: 5.0,
-                    memory_bytes: 300 * 1024 * 1024,
-                    status: "Running".into(),
-                },
-                models::WindowsProcessInfo {
-                    pid: 300,
-                    name: "explorer.exe".into(),
-                    cpu_pct: 1.0,
-                    memory_bytes: 100 * 1024 * 1024,
-                    status: "Running".into(),
-                },
-            ],
-            disks: vec![],
-            gpu: None,
-        }
+        models::make_test_snapshot()
     }
 
     #[test]

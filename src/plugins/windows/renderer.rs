@@ -10,6 +10,7 @@ use ratatui::{
 
 use super::models::{WindowsDiskInfo, WindowsHostSnapshot, WindowsProcessInfo};
 use super::state::{WindowsPanel, WindowsSortField, WindowsState};
+use crate::constants::STANDARD_PORTS;
 use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
 
@@ -123,10 +124,21 @@ fn render_dashboard(
             WindowsPanel::Disks => {
                 render_disks(frame, chunks[0], &snapshot.disks, theme);
             }
-            // Panels that will be implemented in later phases — show placeholder
-            _ => {
+            WindowsPanel::Security => {
+                render_security_status(frame, chunks[0], snapshot, theme);
+            }
+            WindowsPanel::Connections => {
+                render_connections(frame, chunks[0], snapshot, theme);
+            }
+            WindowsPanel::Network => {
+                render_network_info(frame, chunks[0], snapshot, theme);
+            }
+            WindowsPanel::StartupPrograms => {
+                render_startup_programs(frame, chunks[0], snapshot, theme);
+            }
+            WindowsPanel::AiAnalysis => {
                 let msg = Paragraph::new(Span::styled(
-                    format!(" {:?} panel (coming soon)", panel),
+                    " Press 'a' to trigger AI analysis",
                     Style::default().fg(theme.text_muted),
                 ));
                 frame.render_widget(msg, chunks[0]);
@@ -157,26 +169,48 @@ fn render_dashboard(
     }
 
     // Normal dashboard layout
+    let has_security = snapshot.security.is_some();
+    let has_connections =
+        !snapshot.tcp_connections.is_empty() || !snapshot.listening_ports.is_empty();
+    let has_startup = !snapshot.startup_programs.is_empty();
+
+    let security_height: u16 = if has_security { 3 } else { 0 };
+    let connections_height: u16 = if has_connections { 6 } else { 0 };
+    let startup_height: u16 = if has_startup { 4 } else { 0 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header info bar
-            Constraint::Length(5), // system overview (CPU + RAM gauges)
-            Constraint::Min(6),    // process list + disk/GPU sidebar
+            Constraint::Length(1),                  // 0: header info bar
+            Constraint::Length(security_height),    // 1: security status
+            Constraint::Length(5),                  // 2: system overview (CPU + RAM)
+            Constraint::Min(6),                     // 3: process list + sidebar
+            Constraint::Length(connections_height), // 4: connections
+            Constraint::Length(startup_height),     // 5: startup programs
         ])
         .split(area);
 
     render_header(frame, chunks[0], snapshot, state, theme);
-    render_system_overview(frame, chunks[1], snapshot, theme, glyphs);
+    if has_security {
+        render_security_status(frame, chunks[1], snapshot, theme);
+    }
+    render_system_overview(frame, chunks[2], snapshot, theme, glyphs);
 
-    // Bottom: process list | disk + GPU info
-    let bottom = Layout::default()
+    // Middle: process list | sidebar (disks + GPU + network)
+    let middle = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(chunks[2]);
+        .split(chunks[3]);
 
-    render_process_list(frame, bottom[0], snapshot, state, theme);
-    render_sidebar(frame, bottom[1], snapshot, theme, glyphs);
+    render_process_list(frame, middle[0], snapshot, state, theme);
+    render_sidebar(frame, middle[1], snapshot, theme, glyphs);
+
+    if has_connections {
+        render_connections(frame, chunks[4], snapshot, theme);
+    }
+    if has_startup {
+        render_startup_programs(frame, chunks[5], snapshot, theme);
+    }
 }
 
 fn render_header(
@@ -433,27 +467,36 @@ fn render_sidebar(
     _glyphs: &Glyphs,
 ) {
     let has_gpu = snapshot.gpu.is_some();
-    let chunks = if has_gpu {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(4),    // disks
-                Constraint::Length(6), // GPU
-            ])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(4)])
-            .split(area)
-    };
+    let has_networks = !snapshot.networks.is_empty();
+
+    let mut constraints: Vec<Constraint> = vec![Constraint::Min(4)]; // disks always
+    if has_gpu {
+        constraints.push(Constraint::Length(6));
+    }
+    if has_networks {
+        constraints.push(Constraint::Length(4));
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+
+    let mut idx = 0;
 
     // Disk info
-    render_disks(frame, chunks[0], &snapshot.disks, theme);
+    render_disks(frame, chunks[idx], &snapshot.disks, theme);
+    idx += 1;
 
     // GPU info
     if has_gpu {
-        render_gpu(frame, chunks[1], snapshot.gpu.as_ref().unwrap(), theme);
+        render_gpu(frame, chunks[idx], snapshot.gpu.as_ref().unwrap(), theme);
+        idx += 1;
+    }
+
+    // Network interfaces
+    if has_networks {
+        render_network_info(frame, chunks[idx], snapshot, theme);
     }
 }
 
@@ -611,6 +654,406 @@ fn truncate_str(s: &str, max: usize) -> String {
     } else {
         format!("{}...", &s[..max.saturating_sub(3)])
     }
+}
+
+// ── New panels for expanded agent data ───────────────────────────
+
+/// Security status panel — firewall, defender, updates, users in one compact row.
+fn render_security_status(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: &WindowsHostSnapshot,
+    theme: &Theme,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(Span::styled(
+            " Security ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(ref sec) = snapshot.security else {
+        return;
+    };
+
+    let mut spans: Vec<Span> = vec![Span::styled(" ", Style::default())];
+
+    // Firewall per profile
+    spans.push(Span::styled(
+        "Firewall: ",
+        Style::default().fg(theme.text_dim),
+    ));
+    for (i, profile) in sec.firewall_profiles.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("/", Style::default().fg(theme.text_muted)));
+        }
+        let (label, color) = if profile.enabled {
+            ("ON", theme.success)
+        } else {
+            ("OFF", theme.danger)
+        };
+        spans.push(Span::styled(
+            label,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    spans.push(Span::styled(" | ", Style::default().fg(theme.text_muted)));
+
+    // Defender
+    spans.push(Span::styled(
+        "Defender: ",
+        Style::default().fg(theme.text_dim),
+    ));
+    match sec.defender_enabled {
+        Some(true) => {
+            spans.push(Span::styled(
+                "ON",
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        Some(false) => {
+            spans.push(Span::styled(
+                "OFF",
+                Style::default()
+                    .fg(theme.danger)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        None => {
+            spans.push(Span::styled("N/A", Style::default().fg(theme.text_muted)));
+        }
+    }
+
+    // Real-time protection
+    if let Some(rt) = sec.defender_realtime {
+        spans.push(Span::styled(
+            if rt { " RT:ON" } else { " RT:OFF" },
+            Style::default().fg(if rt { theme.success } else { theme.danger }),
+        ));
+    }
+
+    spans.push(Span::styled(" | ", Style::default().fg(theme.text_muted)));
+
+    // Windows Update age
+    spans.push(Span::styled(
+        "Updates: ",
+        Style::default().fg(theme.text_dim),
+    ));
+    match sec.last_update_days {
+        Some(days) => {
+            let color = if days > 30 {
+                theme.danger
+            } else if days > 14 {
+                theme.warning
+            } else {
+                theme.success
+            };
+            spans.push(Span::styled(
+                format!("{}d ago", days),
+                Style::default().fg(color),
+            ));
+        }
+        None => {
+            spans.push(Span::styled("N/A", Style::default().fg(theme.text_muted)));
+        }
+    }
+
+    // Logged-in users summary
+    if !snapshot.logged_in_users.is_empty() {
+        spans.push(Span::styled(" | ", Style::default().fg(theme.text_muted)));
+        let rdp_count = snapshot
+            .logged_in_users
+            .iter()
+            .filter(|u| u.session_type == "RDP")
+            .count();
+        let user_label = if rdp_count > 0 {
+            format!(
+                "Users:{} ({}xRDP)",
+                snapshot.logged_in_users.len(),
+                rdp_count
+            )
+        } else {
+            format!("Users:{}", snapshot.logged_in_users.len())
+        };
+        let user_color = if rdp_count > 0 {
+            theme.warning
+        } else {
+            theme.text_primary
+        };
+        spans.push(Span::styled(user_label, Style::default().fg(user_color)));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), inner);
+}
+
+/// Connections panel — active TCP connections + listening ports.
+fn render_connections(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: &WindowsHostSnapshot,
+    theme: &Theme,
+) {
+    let halves = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+
+    // Left: active connections
+    render_active_connections(frame, halves[0], snapshot, theme);
+    // Right: listening ports
+    render_listening_ports(frame, halves[1], snapshot, theme);
+}
+
+/// Whether a TCP connection looks suspicious (non-standard port, unknown process).
+fn is_suspicious_port(port: u16) -> bool {
+    !STANDARD_PORTS.contains(&port)
+}
+
+fn render_active_connections(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: &WindowsHostSnapshot,
+    theme: &Theme,
+) {
+    let suspicious_count = snapshot
+        .tcp_connections
+        .iter()
+        .filter(|c| c.state == "ESTABLISHED" && is_suspicious_port(c.remote_port))
+        .count();
+
+    let title = if suspicious_count > 0 {
+        format!(
+            " Connections ({}, {} suspicious) ",
+            snapshot.tcp_connections.len(),
+            suspicious_count
+        )
+    } else {
+        format!(" Connections ({}) ", snapshot.tcp_connections.len())
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if suspicious_count > 0 {
+            theme.warning
+        } else {
+            theme.border
+        }))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if snapshot.tcp_connections.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " No active connections",
+                Style::default().fg(theme.text_muted),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = snapshot
+        .tcp_connections
+        .iter()
+        .take(inner.height as usize)
+        .map(|c| {
+            let suspicious = c.state == "ESTABLISHED" && is_suspicious_port(c.remote_port);
+            let color = if suspicious {
+                theme.warning
+            } else {
+                theme.text_primary
+            };
+            let indicator = if suspicious { "!" } else { " " };
+            Line::from(Span::styled(
+                format!(
+                    "{}{}:{} -> {}:{} [{}] {}",
+                    indicator,
+                    truncate_str(&c.local_addr, 15),
+                    c.local_port,
+                    truncate_str(&c.remote_addr, 15),
+                    c.remote_port,
+                    truncate_str(&c.state, 6),
+                    truncate_str(&c.process_name, 15),
+                ),
+                Style::default().fg(color),
+            ))
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_listening_ports(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: &WindowsHostSnapshot,
+    theme: &Theme,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(Span::styled(
+            format!(" Listening ({}) ", snapshot.listening_ports.len()),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if snapshot.listening_ports.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " No listening ports",
+                Style::default().fg(theme.text_muted),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = snapshot
+        .listening_ports
+        .iter()
+        .take(inner.height as usize)
+        .map(|p| {
+            Line::from(Span::styled(
+                format!(
+                    " {:>5} {:>4} {} ({})",
+                    p.port,
+                    p.protocol,
+                    truncate_str(&p.process_name, 20),
+                    p.pid,
+                ),
+                Style::default().fg(theme.text_primary),
+            ))
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Network interfaces panel.
+fn render_network_info(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: &WindowsHostSnapshot,
+    theme: &Theme,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(Span::styled(
+            " Network ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if snapshot.networks.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " No network data",
+                Style::default().fg(theme.text_muted),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = snapshot
+        .networks
+        .iter()
+        .take(inner.height as usize)
+        .map(|n| {
+            Line::from(vec![
+                Span::styled(
+                    format!(" {:<14}", truncate_str(&n.name, 14)),
+                    Style::default().fg(theme.text_primary),
+                ),
+                Span::styled("RX:", Style::default().fg(theme.text_dim)),
+                Span::styled(
+                    format!("{} ", format_bytes(n.rx_bytes)),
+                    Style::default().fg(theme.success),
+                ),
+                Span::styled("TX:", Style::default().fg(theme.text_dim)),
+                Span::styled(format_bytes(n.tx_bytes), Style::default().fg(theme.warning)),
+            ])
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Startup programs panel.
+fn render_startup_programs(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: &WindowsHostSnapshot,
+    theme: &Theme,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(Span::styled(
+            format!(" Startup Programs ({}) ", snapshot.startup_programs.len()),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if snapshot.startup_programs.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " No startup programs detected",
+                Style::default().fg(theme.text_muted),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = snapshot
+        .startup_programs
+        .iter()
+        .take(inner.height as usize)
+        .map(|s| {
+            Line::from(vec![
+                Span::styled(
+                    format!(" {:<20} ", truncate_str(&s.name, 20)),
+                    Style::default().fg(theme.text_primary),
+                ),
+                Span::styled(
+                    truncate_str(&s.command, 40),
+                    Style::default().fg(theme.text_dim),
+                ),
+                Span::styled(
+                    format!("  [{}]", truncate_str(&s.location, 15)),
+                    Style::default().fg(theme.text_muted),
+                ),
+            ])
+        })
+        .collect();
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 #[cfg(test)]
