@@ -164,7 +164,7 @@ pub const CANDLE_PRICE_LABEL_WIDTH: u16 = 12;
 
 // ── Windows Host Agent ────────────────────────────────────────────
 /// Default sentinel-agent HTTP snapshot endpoint.
-pub const DEFAULT_AGENT_URL: &str = "http://localhost:8085/api/snapshot";
+pub const DEFAULT_AGENT_URL: &str = "http://localhost:8086/api/snapshot";
 /// Default sentinel-agent HTTP port.
 pub const DEFAULT_AGENT_PORT: u16 = 8085;
 /// Default polling interval for the Windows host agent (seconds).

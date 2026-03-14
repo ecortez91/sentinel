@@ -25,7 +25,7 @@ const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_BIND: &str = "0.0.0.0";
 
 /// Default listen port.
-const DEFAULT_PORT: u16 = 8085;
+const DEFAULT_PORT: u16 = 8086;
 
 /// Maximum top processes to include in snapshot.
 const MAX_TOP_PROCESSES: usize = 30;

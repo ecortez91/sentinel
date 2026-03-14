@@ -11,7 +11,7 @@ tab.
  ┌─────────────────────────┐         HTTP/JSON          ┌──────────────────────┐
  │  WSL2 / Linux           │  ──────────────────────►   │  Windows Host        │
  │  Sentinel TUI           │  GET /api/snapshot         │  sentinel-agent.exe  │
- │  (Windows Host plugin)  │  ◄──────────────────────   │  port 8085           │
+ │  (Windows Host plugin)  │  ◄──────────────────────   │  port 8086           │
  └─────────────────────────┘      System snapshot       └──────────────────────┘
 ```
 
@@ -50,7 +50,7 @@ Copy it to a location on the Windows host.
 ## Step 2: Run the Agent on Windows
 
 ```powershell
-# Default: listen on all interfaces, port 8085
+# Default: listen on all interfaces, port 8086
 sentinel-agent.exe
 
 # Custom port
@@ -63,7 +63,7 @@ sentinel-agent.exe --bind 127.0.0.1
 On startup, the agent prints:
 
 ```
-sentinel-agent v0.3.0 listening on 0.0.0.0:8085
+sentinel-agent v0.3.0 listening on 0.0.0.0:8086
 Endpoints:
   GET /api/snapshot  - system snapshot
   GET /api/status    - agent health
@@ -74,13 +74,13 @@ Endpoints:
 From PowerShell:
 
 ```powershell
-Invoke-RestMethod http://localhost:8085/api/status
+Invoke-RestMethod http://localhost:8086/api/status
 ```
 
 From WSL2:
 
 ```bash
-curl http://$(grep nameserver /etc/resolv.conf | awk '{print $2}'):8085/api/status
+curl http://$(grep nameserver /etc/resolv.conf | awk '{print $2}'):8086/api/status
 ```
 
 You should see JSON like:
@@ -106,7 +106,7 @@ Edit `~/.config/sentinel/config.toml` on the WSL2/Linux side:
 ```toml
 [windows]
 enabled = true
-agent_url = "http://localhost:8085/api/snapshot"
+agent_url = "http://localhost:8086/api/snapshot"
 poll_interval_secs = 5
 ```
 
@@ -118,13 +118,13 @@ reading `/etc/resolv.conf`. You do **not** need to hard-code the IP.
 If auto-detection fails, override via environment variable:
 
 ```bash
-export SENTINEL_AGENT_URL="http://172.28.160.1:8085/api/snapshot"
+export SENTINEL_AGENT_URL="http://172.28.160.1:8086/api/snapshot"
 ```
 
 Or set it in `~/.config/sentinel/.env`:
 
 ```
-SENTINEL_AGENT_URL=http://172.28.160.1:8085/api/snapshot
+SENTINEL_AGENT_URL=http://172.28.160.1:8086/api/snapshot
 ```
 
 ## Step 4: Launch Sentinel
@@ -194,11 +194,11 @@ Returns agent health:
 | Problem | Solution |
 |---------|----------|
 | Tab not showing | Check `[windows] enabled = true` in config.toml |
-| Connection refused | Verify the agent is running: `curl http://<host-ip>:8085/api/status` |
+| Connection refused | Verify the agent is running: `curl http://<host-ip>:8086/api/status` |
 | Wrong host IP on WSL2 | Set `SENTINEL_AGENT_URL` env var explicitly |
-| Firewall blocking | Allow port 8085 inbound in Windows Firewall |
-| Agent crashes on start | Check if port 8085 is already in use: `netstat -an | findstr 8085` |
-| LHM and agent on same port | Both default to 8085. Change one: `sentinel-agent.exe --port 9090` |
+| Firewall blocking | Allow port 8086 inbound in Windows Firewall |
+| Agent crashes on start | Check if port 8086 is already in use: `netstat -an | findstr 8086` |
+| LHM port conflict | LHM defaults to 8085, agent to 8086 — no conflict by default |
 
 ## Security Notes
 
