@@ -86,6 +86,12 @@ pub struct WindowsState {
     pub sort_ascending: bool,
     /// Which panel is focused/expanded (None = normal layout).
     pub focused_panel: Option<WindowsPanel>,
+    /// AI security analysis result.
+    pub ai_analysis: Option<String>,
+    /// Whether AI analysis is currently streaming.
+    pub ai_loading: bool,
+    /// AI analysis scroll offset.
+    pub ai_scroll: usize,
 }
 
 impl WindowsState {
@@ -101,6 +107,9 @@ impl WindowsState {
             sort_field: WindowsSortField::Cpu,
             sort_ascending: false,
             focused_panel: None,
+            ai_analysis: None,
+            ai_loading: false,
+            ai_scroll: 0,
         }
     }
 

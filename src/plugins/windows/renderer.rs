@@ -137,11 +137,7 @@ fn render_dashboard(
                 render_startup_programs(frame, chunks[0], snapshot, theme);
             }
             WindowsPanel::AiAnalysis => {
-                let msg = Paragraph::new(Span::styled(
-                    " Press 'a' to trigger AI analysis",
-                    Style::default().fg(theme.text_muted),
-                ));
-                frame.render_widget(msg, chunks[0]);
+                render_ai_panel(frame, chunks[0], state, theme);
             }
         }
 
@@ -173,10 +169,12 @@ fn render_dashboard(
     let has_connections =
         !snapshot.tcp_connections.is_empty() || !snapshot.listening_ports.is_empty();
     let has_startup = !snapshot.startup_programs.is_empty();
+    let has_ai = state.ai_analysis.is_some() || state.ai_loading;
 
     let security_height: u16 = if has_security { 3 } else { 0 };
     let connections_height: u16 = if has_connections { 6 } else { 0 };
     let startup_height: u16 = if has_startup { 4 } else { 0 };
+    let ai_height: u16 = if has_ai { 6 } else { 0 };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -187,6 +185,7 @@ fn render_dashboard(
             Constraint::Min(6),                     // 3: process list + sidebar
             Constraint::Length(connections_height), // 4: connections
             Constraint::Length(startup_height),     // 5: startup programs
+            Constraint::Length(ai_height),          // 6: AI analysis
         ])
         .split(area);
 
@@ -210,6 +209,9 @@ fn render_dashboard(
     }
     if has_startup {
         render_startup_programs(frame, chunks[5], snapshot, theme);
+    }
+    if has_ai {
+        render_ai_panel(frame, chunks[6], state, theme);
     }
 }
 
@@ -999,6 +1001,66 @@ fn render_network_info(
         .collect();
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// AI security analysis panel.
+fn render_ai_panel(frame: &mut Frame, area: Rect, state: &WindowsState, theme: &Theme) {
+    let title = if state.ai_loading {
+        " AI Security Analysis (streaming...) "
+    } else {
+        " AI Security Analysis [a: refresh] "
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if state.ai_loading {
+            theme.accent
+        } else {
+            theme.border
+        }))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.ai_loading && state.ai_analysis.is_none() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " Analyzing Windows host security...",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::ITALIC),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    if let Some(ref analysis) = state.ai_analysis {
+        let lines: Vec<Line> = analysis
+            .lines()
+            .skip(state.ai_scroll)
+            .take(inner.height as usize)
+            .map(|line| {
+                Line::from(Span::styled(
+                    format!(" {}", line),
+                    Style::default().fg(theme.text_primary),
+                ))
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), inner);
+    } else {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " Press 'a' to analyze host security with AI",
+                Style::default().fg(theme.text_muted),
+            )),
+            inner,
+        );
+    }
 }
 
 /// Startup programs panel.

@@ -91,6 +91,99 @@ impl WindowsPlugin {
         self.agent_url.clone()
     }
 
+    /// Build AI context string from the current snapshot for security analysis.
+    fn build_ai_context(&self) -> Option<String> {
+        let snap = self.state.snapshot.as_ref()?;
+        let mut ctx = String::with_capacity(2048);
+
+        ctx.push_str("Analyze this Windows host security posture:\n\n");
+        ctx.push_str("=== SYSTEM ===\n");
+        ctx.push_str(&format!("Hostname: {}\n", snap.hostname));
+        ctx.push_str(&format!("OS: {}\n", snap.os_version));
+        ctx.push_str(&format!("Uptime: {}h\n", snap.uptime_secs / 3600));
+        ctx.push_str(&format!(
+            "CPU: {:.1}% | RAM: {:.0}% ({} cores)\n",
+            snap.cpu_usage_pct,
+            snap.memory_usage_pct(),
+            snap.cpu_cores,
+        ));
+
+        // Security status
+        if let Some(ref sec) = snap.security {
+            ctx.push_str("\n=== SECURITY STATUS ===\n");
+            for p in &sec.firewall_profiles {
+                ctx.push_str(&format!(
+                    "Firewall {}: {}\n",
+                    p.name,
+                    if p.enabled { "ON" } else { "OFF" }
+                ));
+            }
+            if let Some(d) = sec.defender_enabled {
+                ctx.push_str(&format!("Defender: {}\n", if d { "ON" } else { "OFF" }));
+            }
+            if let Some(rt) = sec.defender_realtime {
+                ctx.push_str(&format!("Real-time protection: {}\n", if rt { "ON" } else { "OFF" }));
+            }
+            if let Some(days) = sec.last_update_days {
+                ctx.push_str(&format!("Last Windows Update: {} days ago\n", days));
+            }
+        }
+
+        // Connections summary
+        if !snap.tcp_connections.is_empty() {
+            let established = snap.tcp_connections.iter().filter(|c| c.state == "ESTABLISHED").count();
+            let suspicious = snap.tcp_connections.iter().filter(|c| {
+                c.state == "ESTABLISHED" && !crate::constants::STANDARD_PORTS.contains(&c.remote_port)
+            }).count();
+            ctx.push_str(&format!(
+                "\n=== CONNECTIONS ({} total, {} established, {} suspicious) ===\n",
+                snap.tcp_connections.len(), established, suspicious
+            ));
+            // Include top 10 connections (prioritize suspicious)
+            let mut conns: Vec<_> = snap.tcp_connections.iter().collect();
+            conns.sort_by_key(|c| if c.state == "ESTABLISHED" && !crate::constants::STANDARD_PORTS.contains(&c.remote_port) { 0 } else { 1 });
+            for c in conns.iter().take(10) {
+                ctx.push_str(&format!(
+                    "  {}:{} -> {}:{} [{}] {}\n",
+                    c.local_addr, c.local_port, c.remote_addr, c.remote_port, c.state, c.process_name
+                ));
+            }
+        }
+
+        // Listening ports
+        if !snap.listening_ports.is_empty() {
+            ctx.push_str(&format!("\n=== LISTENING PORTS ({}) ===\n", snap.listening_ports.len()));
+            for p in snap.listening_ports.iter().take(15) {
+                ctx.push_str(&format!("  {} {} {} (PID:{})\n", p.port, p.protocol, p.process_name, p.pid));
+            }
+        }
+
+        // Startup programs
+        if !snap.startup_programs.is_empty() {
+            ctx.push_str(&format!("\n=== STARTUP PROGRAMS ({}) ===\n", snap.startup_programs.len()));
+            for s in snap.startup_programs.iter().take(10) {
+                ctx.push_str(&format!("  {} -> {} [{}]\n", s.name, s.command, s.location));
+            }
+        }
+
+        // Users
+        if !snap.logged_in_users.is_empty() {
+            ctx.push_str(&format!("\n=== LOGGED-IN USERS ({}) ===\n", snap.logged_in_users.len()));
+            for u in &snap.logged_in_users {
+                ctx.push_str(&format!("  {} ({}, {})\n", u.username, u.session_type, u.state));
+            }
+        }
+
+        ctx.push_str("\nProvide a security assessment covering:\n");
+        ctx.push_str("1. Overall security posture (good/moderate/poor)\n");
+        ctx.push_str("2. Immediate risks or concerns\n");
+        ctx.push_str("3. Suspicious connections or processes\n");
+        ctx.push_str("4. Specific recommendations\n");
+        ctx.push_str("Keep it concise and actionable (under 300 words).\n");
+
+        Some(ctx)
+    }
+
     /// Spawn the background polling task. Called once on first tick.
     fn spawn_poller(&mut self) {
         if self.poller_spawned {
@@ -190,6 +283,22 @@ impl Plugin for WindowsPlugin {
 
     fn handle_key(&mut self, key: KeyEvent) -> PluginAction {
         match key.code {
+            // AI analysis
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                if !self.state.ai_loading {
+                    if let Some(ctx) = self.build_ai_context() {
+                        self.state.ai_loading = true;
+                        self.state.ai_analysis = None;
+                        self.state.ai_scroll = 0;
+                        return PluginAction::RequestAiAnalysis(ctx);
+                    } else {
+                        return PluginAction::SetStatus(
+                            "No snapshot available for AI analysis".to_string(),
+                        );
+                    }
+                }
+                PluginAction::Consumed
+            }
             // Sort controls
             KeyCode::Char('s') => {
                 self.state.cycle_sort();
@@ -255,7 +364,7 @@ impl Plugin for WindowsPlugin {
             ("s", "Sort"),
             ("S", "Direction"),
             ("f", "Focus"),
-            ("PgUp/Dn", "Page"),
+            ("a", "AI Analysis"),
         ]
     }
 
@@ -267,6 +376,7 @@ impl Plugin for WindowsPlugin {
             ("S", "Toggle sort direction (asc/desc)"),
             ("f", "Focus/expand current panel"),
             ("F", "Cycle focused panel"),
+            ("a", "AI security analysis (Haiku)"),
             ("PgUp", "Page up in process list"),
             ("PgDn", "Page down in process list"),
             ("Home", "Jump to first process"),
@@ -312,6 +422,23 @@ impl Plugin for WindowsPlugin {
             }
             _ => None,
         }
+    }
+
+    fn receive_ai_chunk(&mut self, chunk: &str) {
+        if let Some(ref mut analysis) = self.state.ai_analysis {
+            analysis.push_str(chunk);
+        } else {
+            self.state.ai_analysis = Some(chunk.to_string());
+        }
+    }
+
+    fn ai_analysis_done(&mut self) {
+        self.state.ai_loading = false;
+    }
+
+    fn ai_analysis_error(&mut self, error: &str) {
+        self.state.ai_loading = false;
+        self.state.ai_analysis = Some(format!("Error: {}", error));
     }
 
     fn security_alerts(&mut self) -> Vec<Alert> {
@@ -631,6 +758,51 @@ mod tests {
 
         plugin.handle_key(make_key(KeyCode::Char('f')));
         assert!(plugin.state.focused_panel.is_none());
+    }
+
+    #[test]
+    fn ai_key_emits_request_with_snapshot() {
+        let mut plugin = make_plugin();
+        plugin.state.snapshot = Some(make_snapshot());
+
+        let action = plugin.handle_key(make_key(KeyCode::Char('a')));
+        assert!(matches!(action, PluginAction::RequestAiAnalysis(_)));
+        assert!(plugin.state.ai_loading);
+        assert!(plugin.state.ai_analysis.is_none());
+    }
+
+    #[test]
+    fn ai_key_sets_status_without_snapshot() {
+        let mut plugin = make_plugin();
+        // No snapshot set
+        let action = plugin.handle_key(make_key(KeyCode::Char('a')));
+        assert!(matches!(action, PluginAction::SetStatus(_)));
+        assert!(!plugin.state.ai_loading);
+    }
+
+    #[test]
+    fn ai_receive_chunk_and_done() {
+        let mut plugin = make_plugin();
+        plugin.state.ai_loading = true;
+
+        plugin.receive_ai_chunk("Hello ");
+        assert_eq!(plugin.state.ai_analysis, Some("Hello ".to_string()));
+
+        plugin.receive_ai_chunk("World");
+        assert_eq!(plugin.state.ai_analysis, Some("Hello World".to_string()));
+
+        plugin.ai_analysis_done();
+        assert!(!plugin.state.ai_loading);
+    }
+
+    #[test]
+    fn ai_error_sets_message() {
+        let mut plugin = make_plugin();
+        plugin.state.ai_loading = true;
+
+        plugin.ai_analysis_error("API key invalid");
+        assert!(!plugin.state.ai_loading);
+        assert!(plugin.state.ai_analysis.as_ref().unwrap().contains("Error:"));
     }
 
     #[test]
