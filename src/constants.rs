@@ -177,8 +177,9 @@ pub const AGENT_MAX_TOP_BY_CPU: usize = 50;
 pub const AGENT_MAX_TOP_BY_MEMORY: usize = 20;
 /// EMA smoothing factor for per-process CPU/RAM values (0.0–1.0).
 /// Higher = more responsive but jumpier. Lower = smoother but laggier.
-/// 0.4 means 40% new value + 60% old value.
-pub const AGENT_PROCESS_SMOOTHING_FACTOR: f32 = 0.4;
+/// 0.3 means 30% new value + 70% old value — very smooth, converges
+/// in ~4-5 poll cycles (~20-25 seconds).
+pub const AGENT_PROCESS_SMOOTHING_FACTOR: f32 = 0.3;
 /// Timeout for agent shell commands (seconds).
 pub const AGENT_CMD_TIMEOUT_SECS: u64 = 3;
 /// Maximum TCP connections to include in snapshot.

@@ -325,17 +325,17 @@ impl App {
         );
         plugins.register(Box::new(market_plugin));
 
-        // Register Windows host monitoring plugin (#1)
+        // Register Settings plugin (always enabled)
+        let settings_plugin = SettingsPlugin::new(true);
+        plugins.register(Box::new(settings_plugin));
+
+        // Register Windows host monitoring plugin (3rd plugin tab)
         let windows_plugin = WindowsPlugin::new(
             config.windows.enabled,
             config.windows.agent_url.clone(),
             config.windows.poll_interval_secs,
         );
         plugins.register(Box::new(windows_plugin));
-
-        // Register Settings plugin (always enabled)
-        let settings_plugin = SettingsPlugin::new(true);
-        plugins.register(Box::new(settings_plugin));
 
         // Set plugin count on state for tab navigation
         state.plugin_count = plugins.enabled_count();

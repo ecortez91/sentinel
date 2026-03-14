@@ -329,6 +329,7 @@ fn column_label(
 }
 
 /// Sort processes according to the current sort field and direction.
+/// Uses PID as a stable tiebreaker to prevent visual jitter.
 fn sort_processes(
     procs: &[WindowsProcessInfo],
     field: WindowsSortField,
@@ -336,7 +337,7 @@ fn sort_processes(
 ) -> Vec<WindowsProcessInfo> {
     let mut sorted = procs.to_vec();
     sorted.sort_by(|a, b| {
-        let cmp = match field {
+        let primary = match field {
             WindowsSortField::Cpu => a
                 .cpu_pct
                 .partial_cmp(&b.cpu_pct)
@@ -345,11 +346,13 @@ fn sort_processes(
             WindowsSortField::Pid => a.pid.cmp(&b.pid),
             WindowsSortField::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         };
-        if ascending {
-            cmp
+        let primary = if ascending {
+            primary
         } else {
-            cmp.reverse()
-        }
+            primary.reverse()
+        };
+        // Stable tiebreaker: sort by PID when primary values are equal
+        primary.then_with(|| a.pid.cmp(&b.pid))
     });
     sorted
 }
@@ -420,9 +423,11 @@ pub(super) fn build_grouped_rows(
         })
         .collect();
 
-    // Sort groups by the active sort field (using aggregate values)
+    // Sort groups by the active sort field (using aggregate values).
+    // Use name as a stable tiebreaker to prevent visual jitter when
+    // values are close and fluctuate between poll cycles.
     group_list.sort_by(|a, b| {
-        let cmp = match sort_field {
+        let primary = match sort_field {
             WindowsSortField::Cpu => a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal),
             WindowsSortField::Memory => a.2.cmp(&b.2),
             WindowsSortField::Name => a.0.to_lowercase().cmp(&b.0.to_lowercase()),
@@ -432,11 +437,13 @@ pub(super) fn build_grouped_rows(
                 a_min.cmp(&b_min)
             }
         };
-        if sort_ascending {
-            cmp
+        let primary = if sort_ascending {
+            primary
         } else {
-            cmp.reverse()
-        }
+            primary.reverse()
+        };
+        // Stable tiebreaker: sort by name when primary values are equal
+        primary.then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase()))
     });
 
     // Build flat display rows
