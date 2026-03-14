@@ -185,6 +185,25 @@ impl Plugin for WindowsPlugin {
 
     fn handle_key(&mut self, key: KeyEvent) -> PluginAction {
         match key.code {
+            // Sort controls
+            KeyCode::Char('s') => {
+                self.state.cycle_sort();
+                PluginAction::Consumed
+            }
+            KeyCode::Char('S') => {
+                self.state.toggle_sort_direction();
+                PluginAction::Consumed
+            }
+            // Focus/expand controls
+            KeyCode::Char('f') => {
+                self.state.toggle_panel_focus();
+                PluginAction::Consumed
+            }
+            KeyCode::Char('F') if self.state.focused_panel.is_some() => {
+                self.state.cycle_panel_forward();
+                PluginAction::Consumed
+            }
+            // Navigation
             KeyCode::Up | KeyCode::Char('k') => {
                 self.state.move_selection_up();
                 PluginAction::Consumed
@@ -228,8 +247,10 @@ impl Plugin for WindowsPlugin {
     fn status_bar_hints(&self) -> Vec<(&str, &str)> {
         vec![
             ("j/k", "Navigate"),
+            ("s", "Sort"),
+            ("S", "Direction"),
+            ("f", "Focus"),
             ("PgUp/Dn", "Page"),
-            ("Home/End", "Jump"),
         ]
     }
 
@@ -237,6 +258,10 @@ impl Plugin for WindowsPlugin {
         vec![
             ("j / Up", "Move selection up"),
             ("k / Down", "Move selection down"),
+            ("s", "Cycle sort field (CPU/RAM/PID/Name)"),
+            ("S", "Toggle sort direction (asc/desc)"),
+            ("f", "Focus/expand current panel"),
+            ("F", "Cycle focused panel"),
             ("PgUp", "Page up in process list"),
             ("PgDn", "Page down in process list"),
             ("Home", "Jump to first process"),
@@ -288,6 +313,7 @@ impl Plugin for WindowsPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::state::WindowsSortField;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn make_key(code: KeyCode) -> KeyEvent {
@@ -494,5 +520,58 @@ mod tests {
             assert!(plugin.state.error.is_some());
             assert!(plugin.state.error.as_ref().unwrap().contains("refused"));
         });
+    }
+
+    #[test]
+    fn sort_key_cycles_field() {
+        let mut plugin = make_plugin();
+        plugin.state.snapshot = Some(make_snapshot());
+        assert_eq!(plugin.state.sort_field, WindowsSortField::Cpu);
+
+        let action = plugin.handle_key(make_key(KeyCode::Char('s')));
+        assert!(matches!(action, PluginAction::Consumed));
+        assert_eq!(plugin.state.sort_field, WindowsSortField::Memory);
+
+        plugin.handle_key(make_key(KeyCode::Char('s')));
+        assert_eq!(plugin.state.sort_field, WindowsSortField::Pid);
+    }
+
+    #[test]
+    fn sort_direction_key_toggles() {
+        let mut plugin = make_plugin();
+        assert!(!plugin.state.sort_ascending);
+
+        let action = plugin.handle_key(make_key(KeyCode::Char('S')));
+        assert!(matches!(action, PluginAction::Consumed));
+        assert!(plugin.state.sort_ascending);
+    }
+
+    #[test]
+    fn focus_key_toggles_panel() {
+        let mut plugin = make_plugin();
+        assert!(plugin.state.focused_panel.is_none());
+
+        let action = plugin.handle_key(make_key(KeyCode::Char('f')));
+        assert!(matches!(action, PluginAction::Consumed));
+        assert!(plugin.state.focused_panel.is_some());
+
+        plugin.handle_key(make_key(KeyCode::Char('f')));
+        assert!(plugin.state.focused_panel.is_none());
+    }
+
+    #[test]
+    fn focus_cycle_key_only_when_focused() {
+        let mut plugin = make_plugin();
+        // Not focused — 'F' should be Ignored (falls to _ arm)
+        let action = plugin.handle_key(make_key(KeyCode::Char('F')));
+        assert!(matches!(action, PluginAction::Ignored));
+
+        // Enter focus mode
+        plugin.handle_key(make_key(KeyCode::Char('f')));
+        assert!(plugin.state.focused_panel.is_some());
+
+        // Now 'F' should cycle
+        let action = plugin.handle_key(make_key(KeyCode::Char('F')));
+        assert!(matches!(action, PluginAction::Consumed));
     }
 }

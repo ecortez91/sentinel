@@ -8,8 +8,8 @@ use ratatui::{
     Frame,
 };
 
-use super::models::{WindowsDiskInfo, WindowsHostSnapshot};
-use super::state::WindowsState;
+use super::models::{WindowsDiskInfo, WindowsHostSnapshot, WindowsProcessInfo};
+use super::state::{WindowsPanel, WindowsSortField, WindowsState};
 use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
 
@@ -106,6 +106,57 @@ fn render_dashboard(
     theme: &Theme,
     glyphs: &Glyphs,
 ) {
+    // Focus/expand mode: render only the focused panel full-screen
+    if let Some(panel) = state.focused_panel {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(area);
+
+        match panel {
+            WindowsPanel::SystemOverview => {
+                render_system_overview(frame, chunks[0], snapshot, theme, glyphs);
+            }
+            WindowsPanel::ProcessList => {
+                render_process_list(frame, chunks[0], snapshot, state, theme);
+            }
+            WindowsPanel::Disks => {
+                render_disks(frame, chunks[0], &snapshot.disks, theme);
+            }
+            // Panels that will be implemented in later phases — show placeholder
+            _ => {
+                let msg = Paragraph::new(Span::styled(
+                    format!(" {:?} panel (coming soon)", panel),
+                    Style::default().fg(theme.text_muted),
+                ));
+                frame.render_widget(msg, chunks[0]);
+            }
+        }
+
+        // Hint bar at bottom
+        let hint = Paragraph::new(Line::from(vec![
+            Span::styled(
+                " f ",
+                Style::default()
+                    .fg(theme.bg_dark)
+                    .bg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" unfocus  ", Style::default().fg(theme.text_dim)),
+            Span::styled(
+                " F ",
+                Style::default()
+                    .fg(theme.bg_dark)
+                    .bg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" next panel ", Style::default().fg(theme.text_dim)),
+        ]));
+        frame.render_widget(hint, chunks[1]);
+        return;
+    }
+
+    // Normal dashboard layout
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -216,6 +267,55 @@ fn render_system_overview(
     frame.render_widget(ram_gauge, chunks[1]);
 }
 
+/// Sort indicator arrow for column headers.
+fn sort_arrow(ascending: bool) -> &'static str {
+    if ascending {
+        "▲"
+    } else {
+        "▼"
+    }
+}
+
+/// Build a column header label, appending a sort arrow if this column is active.
+fn column_label(
+    label: &str,
+    field: WindowsSortField,
+    active: WindowsSortField,
+    ascending: bool,
+) -> String {
+    if field == active {
+        format!("{}{}", label, sort_arrow(ascending))
+    } else {
+        label.to_string()
+    }
+}
+
+/// Sort processes according to the current sort field and direction.
+fn sort_processes(
+    procs: &[WindowsProcessInfo],
+    field: WindowsSortField,
+    ascending: bool,
+) -> Vec<WindowsProcessInfo> {
+    let mut sorted = procs.to_vec();
+    sorted.sort_by(|a, b| {
+        let cmp = match field {
+            WindowsSortField::Cpu => a
+                .cpu_pct
+                .partial_cmp(&b.cpu_pct)
+                .unwrap_or(std::cmp::Ordering::Equal),
+            WindowsSortField::Memory => a.memory_bytes.cmp(&b.memory_bytes),
+            WindowsSortField::Pid => a.pid.cmp(&b.pid),
+            WindowsSortField::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        };
+        if ascending {
+            cmp
+        } else {
+            cmp.reverse()
+        }
+    });
+    sorted
+}
+
 fn render_process_list(
     frame: &mut Frame,
     area: Rect,
@@ -223,11 +323,18 @@ fn render_process_list(
     state: &WindowsState,
     theme: &Theme,
 ) {
+    let arrow = sort_arrow(state.sort_ascending);
+    let title = format!(
+        " Processes ({}) [s:sort by {} {}] ",
+        snapshot.top_processes.len(),
+        state.sort_field.label(),
+        arrow,
+    );
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
         .title(Span::styled(
-            format!(" Top Processes ({}) ", snapshot.top_processes.len()),
+            title,
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
@@ -240,22 +347,53 @@ fn render_process_list(
         return;
     }
 
-    // Header
+    // Build column headers with sort indicator on active column
+    let pid_hdr = column_label(
+        "PID",
+        WindowsSortField::Pid,
+        state.sort_field,
+        state.sort_ascending,
+    );
+    let name_hdr = column_label(
+        "Name",
+        WindowsSortField::Name,
+        state.sort_field,
+        state.sort_ascending,
+    );
+    let cpu_hdr = column_label(
+        "CPU %",
+        WindowsSortField::Cpu,
+        state.sort_field,
+        state.sort_ascending,
+    );
+    let mem_hdr = column_label(
+        "Memory",
+        WindowsSortField::Memory,
+        state.sort_field,
+        state.sort_ascending,
+    );
+
     let header = Line::from(Span::styled(
         format!(
             " {:<7} {:<25} {:>8} {:>10}",
-            "PID", "Name", "CPU %", "Memory"
+            pid_hdr, name_hdr, cpu_hdr, mem_hdr
         ),
         Style::default()
             .fg(theme.text_dim)
             .add_modifier(Modifier::BOLD),
     ));
 
+    // Sort processes
+    let sorted = sort_processes(
+        &snapshot.top_processes,
+        state.sort_field,
+        state.sort_ascending,
+    );
+
     let max_rows = (inner.height as usize).saturating_sub(1);
     let mut lines = vec![header];
 
-    for (i, proc) in snapshot
-        .top_processes
+    for (i, proc) in sorted
         .iter()
         .enumerate()
         .skip(state.scroll_offset)
