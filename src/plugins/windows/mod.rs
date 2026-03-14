@@ -299,6 +299,28 @@ impl Plugin for WindowsPlugin {
                 }
                 PluginAction::Consumed
             }
+            // View mode toggle (Grouped / Flat)
+            KeyCode::Char('g') => {
+                self.state.toggle_view_mode();
+                PluginAction::Consumed
+            }
+            // Expand/collapse group in grouped view
+            KeyCode::Enter => {
+                if self.state.view_mode == state::WindowsViewMode::Grouped {
+                    if let Some(ref snap) = self.state.snapshot {
+                        let rows = renderer::build_grouped_rows(
+                            &snap.top_processes,
+                            self.state.sort_field,
+                            self.state.sort_ascending,
+                            &self.state.collapsed_groups,
+                        );
+                        if let Some(name) = renderer::group_name_at_row(&rows, self.state.selected_process) {
+                            self.state.toggle_group(&name);
+                        }
+                    }
+                }
+                PluginAction::Consumed
+            }
             // Sort controls
             KeyCode::Char('s') => {
                 self.state.cycle_sort();
@@ -393,10 +415,10 @@ impl Plugin for WindowsPlugin {
     fn status_bar_hints(&self) -> Vec<(&str, &str)> {
         vec![
             ("j/k", "Navigate"),
+            ("g", "Group/Flat"),
             ("s", "Sort"),
-            ("S", "Direction"),
             ("f", "Focus"),
-            ("a", "AI Analysis"),
+            ("a", "AI"),
         ]
     }
 
@@ -404,6 +426,8 @@ impl Plugin for WindowsPlugin {
         vec![
             ("j / Up", "Move selection up"),
             ("k / Down", "Move selection down"),
+            ("g", "Toggle Grouped/Flat view"),
+            ("Enter", "Expand/collapse process group"),
             ("s", "Cycle sort field (CPU/RAM/PID/Name)"),
             ("S", "Toggle sort direction (asc/desc)"),
             ("f", "Focus/expand current panel"),

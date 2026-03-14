@@ -8,8 +8,10 @@ use ratatui::{
     Frame,
 };
 
+use std::collections::HashMap;
+
 use super::models::{WindowsDiskInfo, WindowsHostSnapshot, WindowsProcessInfo};
-use super::state::{WindowsPanel, WindowsSortField, WindowsState};
+use super::state::{WindowsPanel, WindowsSortField, WindowsState, WindowsViewMode};
 use crate::constants::STANDARD_PORTS;
 use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
@@ -119,7 +121,7 @@ fn render_dashboard(
                 render_system_overview(frame, chunks[0], snapshot, theme, glyphs);
             }
             WindowsPanel::ProcessList => {
-                render_process_list(frame, chunks[0], snapshot, state, theme);
+                dispatch_process_list(frame, chunks[0], snapshot, state, theme);
             }
             WindowsPanel::Disks => {
                 render_disks(frame, chunks[0], &snapshot.disks, theme);
@@ -201,7 +203,7 @@ fn render_dashboard(
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(chunks[3]);
 
-    render_process_list(frame, middle[0], snapshot, state, theme);
+    dispatch_process_list(frame, middle[0], snapshot, state, theme);
     render_sidebar(frame, middle[1], snapshot, theme, glyphs);
 
     if has_connections {
@@ -352,6 +354,276 @@ fn sort_processes(
     sorted
 }
 
+/// Dispatch to grouped or flat process list based on view mode.
+fn dispatch_process_list(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: &WindowsHostSnapshot,
+    state: &WindowsState,
+    theme: &Theme,
+) {
+    match state.view_mode {
+        WindowsViewMode::Grouped => {
+            render_grouped_process_list(frame, area, snapshot, state, theme)
+        }
+        WindowsViewMode::Flat => render_process_list(frame, area, snapshot, state, theme),
+    }
+}
+
+/// A row in the grouped process view.
+pub(super) enum GroupedRow {
+    /// Group header: name, count, total_cpu, total_memory, is_expanded
+    Header {
+        name: String,
+        count: usize,
+        total_cpu: f32,
+        total_memory: u64,
+        expanded: bool,
+    },
+    /// Individual process within an expanded group
+    Child {
+        pid: u32,
+        name: String,
+        cpu_pct: f32,
+        memory_bytes: u64,
+    },
+    /// Singleton process (only 1 instance, no grouping needed)
+    Single {
+        pid: u32,
+        name: String,
+        cpu_pct: f32,
+        memory_bytes: u64,
+    },
+}
+
+/// Build the grouped display rows from the process list.
+pub(super) fn build_grouped_rows(
+    procs: &[WindowsProcessInfo],
+    sort_field: WindowsSortField,
+    sort_ascending: bool,
+    collapsed_groups: &std::collections::HashSet<String>,
+) -> Vec<GroupedRow> {
+    // Group by executable name
+    let mut groups: HashMap<String, Vec<&WindowsProcessInfo>> = HashMap::new();
+    for p in procs {
+        groups.entry(p.name.clone()).or_default().push(p);
+    }
+
+    // Build group summaries
+    let mut group_list: Vec<(String, f32, u64, usize, Vec<&WindowsProcessInfo>)> = groups
+        .into_iter()
+        .map(|(name, members)| {
+            let total_cpu: f32 = members.iter().map(|p| p.cpu_pct).sum();
+            let total_mem: u64 = members.iter().map(|p| p.memory_bytes).sum();
+            let count = members.len();
+            (name, total_cpu, total_mem, count, members)
+        })
+        .collect();
+
+    // Sort groups by the active sort field (using aggregate values)
+    group_list.sort_by(|a, b| {
+        let cmp = match sort_field {
+            WindowsSortField::Cpu => a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal),
+            WindowsSortField::Memory => a.2.cmp(&b.2),
+            WindowsSortField::Name => a.0.to_lowercase().cmp(&b.0.to_lowercase()),
+            WindowsSortField::Pid => {
+                let a_min = a.4.iter().map(|p| p.pid).min().unwrap_or(0);
+                let b_min = b.4.iter().map(|p| p.pid).min().unwrap_or(0);
+                a_min.cmp(&b_min)
+            }
+        };
+        if sort_ascending {
+            cmp
+        } else {
+            cmp.reverse()
+        }
+    });
+
+    // Build flat display rows
+    let mut rows = Vec::new();
+    for (name, total_cpu, total_mem, count, mut members) in group_list {
+        if count == 1 {
+            let p = members[0];
+            rows.push(GroupedRow::Single {
+                pid: p.pid,
+                name: p.name.clone(),
+                cpu_pct: p.cpu_pct,
+                memory_bytes: p.memory_bytes,
+            });
+        } else {
+            let expanded = !collapsed_groups.contains(&name);
+            rows.push(GroupedRow::Header {
+                name: name.clone(),
+                count,
+                total_cpu,
+                total_memory: total_mem,
+                expanded,
+            });
+            if expanded {
+                // Sort children by CPU descending within the group
+                members.sort_by(|a, b| {
+                    b.cpu_pct
+                        .partial_cmp(&a.cpu_pct)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                for p in members {
+                    rows.push(GroupedRow::Child {
+                        pid: p.pid,
+                        name: p.name.clone(),
+                        cpu_pct: p.cpu_pct,
+                        memory_bytes: p.memory_bytes,
+                    });
+                }
+            }
+        }
+    }
+    rows
+}
+
+/// Get the group name for the row at the given index (for expand/collapse).
+pub(super) fn group_name_at_row(rows: &[GroupedRow], index: usize) -> Option<String> {
+    match rows.get(index) {
+        Some(GroupedRow::Header { name, .. }) => Some(name.clone()),
+        Some(GroupedRow::Child { name, .. }) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn render_grouped_process_list(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: &WindowsHostSnapshot,
+    state: &WindowsState,
+    theme: &Theme,
+) {
+    let arrow = sort_arrow(state.sort_ascending);
+    let title = format!(
+        " Processes [g:flat] ({}) [s:sort by {} {}] ",
+        snapshot.top_processes.len(),
+        state.sort_field.label(),
+        arrow,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 2 {
+        return;
+    }
+
+    let header = Line::from(Span::styled(
+        format!(
+            " {:<7} {:<27} {:>8} {:>10}",
+            "PID", "Name", "CPU %", "Memory"
+        ),
+        Style::default()
+            .fg(theme.text_dim)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    let rows = build_grouped_rows(
+        &snapshot.top_processes,
+        state.sort_field,
+        state.sort_ascending,
+        &state.collapsed_groups,
+    );
+
+    let max_rows = (inner.height as usize).saturating_sub(1);
+    let mut lines = vec![header];
+
+    for (i, row) in rows
+        .iter()
+        .enumerate()
+        .skip(state.scroll_offset)
+        .take(max_rows)
+    {
+        let is_selected = i == state.selected_process;
+        let base_style = if is_selected {
+            Style::default()
+                .bg(theme.table_row_selected_bg)
+                .fg(theme.text_primary)
+        } else {
+            Style::default().fg(theme.text_primary)
+        };
+
+        match row {
+            GroupedRow::Header {
+                name,
+                count,
+                total_cpu,
+                total_memory,
+                expanded,
+            } => {
+                let indicator = if *expanded { "▼" } else { "▶" };
+                let group_style = if is_selected {
+                    base_style.add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                };
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        " {:<7} {} {} ({})  {:>7.1}% {:>10}",
+                        "",
+                        indicator,
+                        truncate_str(name, 20),
+                        count,
+                        total_cpu,
+                        format_bytes(*total_memory),
+                    ),
+                    group_style,
+                )));
+            }
+            GroupedRow::Child {
+                pid,
+                name,
+                cpu_pct,
+                memory_bytes,
+            } => {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        " {:<7}   ├ {:<23} {:>7.1}% {:>10}",
+                        pid,
+                        truncate_str(name, 23),
+                        cpu_pct,
+                        format_bytes(*memory_bytes),
+                    ),
+                    base_style,
+                )));
+            }
+            GroupedRow::Single {
+                pid,
+                name,
+                cpu_pct,
+                memory_bytes,
+            } => {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        " {:<7} {:<27} {:>7.1}% {:>10}",
+                        pid,
+                        truncate_str(name, 27),
+                        cpu_pct,
+                        format_bytes(*memory_bytes),
+                    ),
+                    base_style,
+                )));
+            }
+        }
+    }
+
+    // Store rows count for key handling (need it for Enter key group toggle)
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn render_process_list(
     frame: &mut Frame,
     area: Rect,
@@ -361,7 +633,7 @@ fn render_process_list(
 ) {
     let arrow = sort_arrow(state.sort_ascending);
     let title = format!(
-        " Processes ({}) [s:sort by {} {}] ",
+        " Processes [g:group] ({}) [s:sort by {} {}] ",
         snapshot.top_processes.len(),
         state.sort_field.label(),
         arrow,

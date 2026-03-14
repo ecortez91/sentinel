@@ -1,5 +1,6 @@
 //! Windows plugin UI state management (#1).
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use super::models::WindowsHostSnapshot;
@@ -33,6 +34,15 @@ impl WindowsSortField {
             Self::Name => "Name",
         }
     }
+}
+
+/// Process list view mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsViewMode {
+    /// Task Manager "Processes" style: grouped by name with aggregates.
+    Grouped,
+    /// Task Manager "Details" style: flat list of individual PIDs.
+    Flat,
 }
 
 /// Which panel is focused/expanded in the Windows tab.
@@ -92,6 +102,10 @@ pub struct WindowsState {
     pub ai_loading: bool,
     /// AI analysis scroll offset.
     pub ai_scroll: usize,
+    /// Process list view mode (Grouped or Flat).
+    pub view_mode: WindowsViewMode,
+    /// Group names that are collapsed (unexpanded) in grouped view.
+    pub collapsed_groups: HashSet<String>,
 }
 
 impl WindowsState {
@@ -110,6 +124,8 @@ impl WindowsState {
             ai_analysis: None,
             ai_loading: false,
             ai_scroll: 0,
+            view_mode: WindowsViewMode::Grouped,
+            collapsed_groups: HashSet::new(),
         }
     }
 
@@ -147,6 +163,23 @@ impl WindowsState {
         self.sort_ascending = !self.sort_ascending;
         self.selected_process = 0;
         self.scroll_offset = 0;
+    }
+
+    /// Toggle between Grouped and Flat process view modes.
+    pub fn toggle_view_mode(&mut self) {
+        self.view_mode = match self.view_mode {
+            WindowsViewMode::Grouped => WindowsViewMode::Flat,
+            WindowsViewMode::Flat => WindowsViewMode::Grouped,
+        };
+        self.selected_process = 0;
+        self.scroll_offset = 0;
+    }
+
+    /// Toggle expand/collapse for a process group by name.
+    pub fn toggle_group(&mut self, group_name: &str) {
+        if !self.collapsed_groups.remove(group_name) {
+            self.collapsed_groups.insert(group_name.to_string());
+        }
     }
 
     /// Toggle focus mode (enter or exit expanded panel view).

@@ -73,6 +73,9 @@ pub struct WindowsProcessInfo {
     pub memory_bytes: u64,
     /// Process status description.
     pub status: String,
+    /// Parent process ID (for grouping).
+    #[serde(default)]
+    pub parent_pid: Option<u32>,
 }
 
 /// Disk drive information.
@@ -234,6 +237,7 @@ pub fn make_test_snapshot() -> WindowsHostSnapshot {
                 cpu_pct: 12.5,
                 memory_bytes: 500 * 1024 * 1024,
                 status: "Running".into(),
+                parent_pid: None,
             },
             WindowsProcessInfo {
                 pid: 200,
@@ -241,6 +245,7 @@ pub fn make_test_snapshot() -> WindowsHostSnapshot {
                 cpu_pct: 2.0,
                 memory_bytes: 100 * 1024 * 1024,
                 status: "Running".into(),
+                parent_pid: None,
             },
             WindowsProcessInfo {
                 pid: 300,
@@ -248,6 +253,7 @@ pub fn make_test_snapshot() -> WindowsHostSnapshot {
                 cpu_pct: 8.0,
                 memory_bytes: 800 * 1024 * 1024,
                 status: "Running".into(),
+                parent_pid: None,
             },
         ],
         disks: vec![WindowsDiskInfo {

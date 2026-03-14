@@ -28,8 +28,13 @@ const DEFAULT_BIND: &str = "0.0.0.0";
 /// Default listen port.
 const DEFAULT_PORT: u16 = 8086;
 
-/// Maximum top processes to include in snapshot.
-const MAX_TOP_PROCESSES: usize = 30;
+/// Maximum processes to include by CPU usage.
+const MAX_TOP_BY_CPU: usize = 50;
+
+/// Maximum additional processes to include by memory usage.
+/// These are merged with the CPU set to ensure memory-heavy processes
+/// (like Vmmem, Chrome) always appear even when idle.
+const MAX_TOP_BY_MEMORY: usize = 20;
 
 /// Maximum TCP connections to include in snapshot.
 const MAX_CONNECTIONS: usize = 50;
@@ -86,6 +91,7 @@ struct ProcessInfo {
     cpu_pct: f32,
     memory_bytes: u64,
     status: String,
+    parent_pid: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -197,6 +203,80 @@ fn run_command(program: &str, args: &[&str]) -> Option<String> {
     }
 }
 
+// ── Private Working Set (Windows-only FFI) ───────────────────────
+//
+// Windows Task Manager shows "Memory (Private Working Set)" which is
+// PrivateUsage from PROCESS_MEMORY_COUNTERS_EX. sysinfo only exposes
+// WorkingSetSize (full RSS including shared DLLs). We call the Win32
+// API directly to match Task Manager's default column.
+
+#[cfg(windows)]
+mod private_mem {
+    use std::mem::{size_of, zeroed};
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct PROCESS_MEMORY_COUNTERS_EX {
+        cb: u32,
+        PageFaultCount: u32,
+        PeakWorkingSetSize: usize,
+        WorkingSetSize: usize,
+        QuotaPeakPagedPoolUsage: usize,
+        QuotaPagedPoolUsage: usize,
+        QuotaPeakNonPagedPoolUsage: usize,
+        QuotaNonPagedPoolUsage: usize,
+        PagefileUsage: usize,
+        PeakPagefileUsage: usize,
+        PrivateUsage: usize,
+    }
+
+    type HANDLE = *mut std::ffi::c_void;
+    type BOOL = i32;
+
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: BOOL, pid: u32) -> HANDLE;
+        fn CloseHandle(handle: HANDLE) -> BOOL;
+        fn K32GetProcessMemoryInfo(
+            process: HANDLE,
+            counters: *mut PROCESS_MEMORY_COUNTERS_EX,
+            cb: u32,
+        ) -> BOOL;
+    }
+
+    /// Get the Private Working Set for a process (matches Task Manager).
+    /// Returns None if the process cannot be opened (access denied, exited).
+    pub fn get(pid: u32) -> Option<u64> {
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return None;
+            }
+            let mut counters: PROCESS_MEMORY_COUNTERS_EX = zeroed();
+            counters.cb = size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+            let ok = K32GetProcessMemoryInfo(handle, &mut counters, counters.cb);
+            CloseHandle(handle);
+            if ok != 0 {
+                Some(counters.PrivateUsage as u64)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Get Private Working Set on Windows, fall back to sysinfo's memory() elsewhere.
+#[cfg(windows)]
+fn get_process_memory(pid: u32, fallback: u64) -> u64 {
+    private_mem::get(pid).unwrap_or(fallback)
+}
+
+#[cfg(not(windows))]
+fn get_process_memory(_pid: u32, fallback: u64) -> u64 {
+    fallback
+}
+
 // ── System collection ────────────────────────────────────────────
 
 fn collect_snapshot(
@@ -227,27 +307,50 @@ fn collect_snapshot(
             .or_insert_with(|| name.clone());
     }
 
-    // Collect top processes by CPU usage
-    let mut procs: Vec<ProcessInfo> = sys
+    // Collect all named processes
+    let all_procs: Vec<ProcessInfo> = sys
         .processes()
         .values()
         .filter(|p| !p.name().to_string_lossy().is_empty())
         .map(|p| ProcessInfo {
             pid: p.pid().as_u32(),
             name: p.name().to_string_lossy().to_string(),
-            cpu_pct: p.cpu_usage(),
-            memory_bytes: p.memory(),
+            cpu_pct: p.cpu_usage() / cpu_cores as f32,
+            memory_bytes: get_process_memory(p.pid().as_u32(), p.memory()),
             status: format!("{:?}", p.status()),
+            parent_pid: p.parent().map(|pp| pp.as_u32()),
         })
         .collect();
 
-    // Sort by CPU usage descending, then truncate
+    // Merge top-by-CPU and top-by-memory to ensure both CPU-heavy and
+    // memory-heavy processes (Vmmem, Chrome) are always included.
+    let mut by_cpu = all_procs.clone();
+    by_cpu.sort_by(|a, b| {
+        b.cpu_pct
+            .partial_cmp(&a.cpu_pct)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    by_cpu.truncate(MAX_TOP_BY_CPU);
+
+    let mut by_mem = all_procs;
+    by_mem.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes));
+    by_mem.truncate(MAX_TOP_BY_MEMORY);
+
+    // Merge and dedup by PID
+    let mut seen = std::collections::HashSet::new();
+    let mut procs: Vec<ProcessInfo> = Vec::with_capacity(MAX_TOP_BY_CPU + MAX_TOP_BY_MEMORY);
+    for p in by_cpu.into_iter().chain(by_mem.into_iter()) {
+        if seen.insert(p.pid) {
+            procs.push(p);
+        }
+    }
+
+    // Final sort by CPU descending for display
     procs.sort_by(|a, b| {
         b.cpu_pct
             .partial_cmp(&a.cpu_pct)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    procs.truncate(MAX_TOP_PROCESSES);
 
     // Collect disk info
     let disks_info = sysinfo::Disks::new_with_refreshed_list();

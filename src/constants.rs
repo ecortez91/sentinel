@@ -171,8 +171,10 @@ pub const DEFAULT_AGENT_PORT: u16 = 8086;
 pub const DEFAULT_AGENT_POLL_SECS: u64 = 5;
 /// Environment variable: override agent snapshot URL entirely.
 pub const ENV_AGENT_URL: &str = "SENTINEL_AGENT_URL";
-/// Maximum top processes returned by the agent snapshot.
-pub const AGENT_MAX_TOP_PROCESSES: usize = 30;
+/// Maximum processes by CPU included in agent snapshot.
+pub const AGENT_MAX_TOP_BY_CPU: usize = 50;
+/// Maximum additional processes by memory included in agent snapshot.
+pub const AGENT_MAX_TOP_BY_MEMORY: usize = 20;
 /// Timeout for agent shell commands (seconds).
 pub const AGENT_CMD_TIMEOUT_SECS: u64 = 3;
 /// Maximum TCP connections to include in snapshot.
