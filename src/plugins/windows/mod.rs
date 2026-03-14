@@ -88,7 +88,13 @@ impl WindowsPlugin {
 
     /// Spawn the background polling task. Called once on first tick.
     fn spawn_poller(&mut self) {
-        if self.poller_spawned || !self.enabled {
+        if self.poller_spawned {
+            return;
+        }
+        if !self.enabled {
+            // Show "Agent not connected" with setup instructions
+            // instead of "Connecting..." forever.
+            self.state.loading = false;
             return;
         }
         self.poller_spawned = true;
