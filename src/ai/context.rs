@@ -325,6 +325,181 @@ impl ContextBuilder {
 
         ctx
     }
+
+    /// Build a lightweight context for auto-analysis and command palette AI.
+    ///
+    /// Uses smaller limits to save ~50-60% input tokens vs `build()`:
+    /// - 10 CPU processes (vs 25)
+    /// - 5 memory processes (vs 15)
+    /// - 5 process groups (vs 20)
+    /// - 10 alerts (vs 30)
+    /// - Skips network interfaces and developer processes entirely
+    pub fn build_light(
+        system: Option<&SystemSnapshot>,
+        processes: &[ProcessInfo],
+        alerts: &[Alert],
+    ) -> String {
+        let mut ctx = String::with_capacity(CONTEXT_INITIAL_CAPACITY / 2);
+
+        ctx.push_str("=== LIVE SYSTEM STATE ===\n\n");
+
+        // System overview (same as full — small and critical)
+        if let Some(sys) = system {
+            ctx.push_str("## System Overview\n");
+            ctx.push_str(&format!("Hostname: {}\n", sys.hostname));
+            ctx.push_str(&format!("CPUs: {} cores\n", sys.cpu_count));
+            ctx.push_str(&format!(
+                "CPU Usage: {:.1}% (global)\n",
+                sys.global_cpu_usage
+            ));
+            ctx.push_str(&format!(
+                "Memory: {} / {} ({:.1}% used)\n",
+                format_bytes(sys.used_memory),
+                format_bytes(sys.total_memory),
+                sys.memory_percent()
+            ));
+            ctx.push_str(&format!(
+                "Swap: {} / {} ({:.1}% used)\n",
+                format_bytes(sys.used_swap),
+                format_bytes(sys.total_swap),
+                sys.swap_percent()
+            ));
+            ctx.push_str(&format!(
+                "Load Average: 1m={:.2} 5m={:.2} 15m={:.2}\n",
+                sys.load_avg_1, sys.load_avg_5, sys.load_avg_15
+            ));
+
+            if let Some(ref temp) = sys.cpu_temp {
+                if let Some(pkg) = temp.package_temp {
+                    ctx.push_str(&format!("CPU Temperature: {:.0}°C\n", pkg));
+                }
+            }
+
+            if let Some(ref gpu) = sys.gpu {
+                ctx.push_str(&format!(
+                    "GPU: {} | Util: {}% | Temp: {}°C\n",
+                    gpu.name, gpu.utilization, gpu.temperature,
+                ));
+            }
+
+            ctx.push('\n');
+        }
+
+        // Top processes by CPU (light: 10)
+        ctx.push_str(&format!(
+            "## Top {} Processes by CPU Usage\n",
+            CONTEXT_LIGHT_TOP_CPU
+        ));
+        ctx.push_str(&format!(
+            "{:<8} {:<25} {:>7} {:>12} {:>7}\n",
+            "PID", "NAME", "CPU%", "MEMORY", "MEM%"
+        ));
+        ctx.push_str(&"-".repeat(65));
+        ctx.push('\n');
+
+        let mut by_cpu = processes.to_vec();
+        by_cpu.sort_by(|a, b| {
+            b.cpu_usage
+                .partial_cmp(&a.cpu_usage)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for p in by_cpu.iter().take(CONTEXT_LIGHT_TOP_CPU) {
+            ctx.push_str(&format!(
+                "{:<8} {:<25} {:>6.1}% {:>12} {:>6.1}%\n",
+                p.pid,
+                truncate_str(&p.name, 25),
+                p.cpu_usage,
+                p.memory_display(),
+                p.memory_percent,
+            ));
+        }
+        ctx.push('\n');
+
+        // Top processes by memory (light: 5)
+        ctx.push_str(&format!(
+            "## Top {} Processes by Memory Usage\n",
+            CONTEXT_LIGHT_TOP_MEM
+        ));
+        let mut by_mem = processes.to_vec();
+        by_mem.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes));
+        for p in by_mem.iter().take(CONTEXT_LIGHT_TOP_MEM) {
+            ctx.push_str(&format!(
+                "  PID:{} {} mem={} ({:.1}%)\n",
+                p.pid,
+                truncate_str(&p.name, 25),
+                p.memory_display(),
+                p.memory_percent,
+            ));
+        }
+        ctx.push('\n');
+
+        // Process groups (light: 5)
+        let groups = aggregate_by_name(processes);
+        if !groups.is_empty() {
+            ctx.push_str("## Top Process Groups\n");
+            for (name, count, cpu, mem) in groups.iter().take(CONTEXT_LIGHT_MAX_GROUPS) {
+                ctx.push_str(&format!(
+                    "  {} x{} cpu={:.1}% mem={}\n",
+                    truncate_str(name, 25),
+                    count,
+                    cpu,
+                    format_bytes(*mem),
+                ));
+            }
+            ctx.push('\n');
+        }
+
+        // Alerts (light: 10)
+        if !alerts.is_empty() {
+            ctx.push_str("## Active Alerts\n");
+            for (i, a) in alerts.iter().take(CONTEXT_LIGHT_MAX_ALERTS).enumerate() {
+                ctx.push_str(&format!("{}. [{}] {}\n", i + 1, a.severity, a.message,));
+            }
+            let danger = alerts
+                .iter()
+                .filter(|a| a.severity == AlertSeverity::Danger)
+                .count();
+            let critical = alerts
+                .iter()
+                .filter(|a| a.severity == AlertSeverity::Critical)
+                .count();
+            ctx.push_str(&format!(
+                "Summary: {} danger, {} critical, {} total\n\n",
+                danger,
+                critical,
+                alerts.len()
+            ));
+        } else {
+            ctx.push_str("## Alerts: None\n\n");
+        }
+
+        // Filesystems (kept — small and useful)
+        if let Some(sys) = system {
+            if !sys.disks.is_empty() {
+                ctx.push_str("## Filesystems\n");
+                for d in &sys.disks {
+                    let used = d.total_space - d.available_space;
+                    let pct = if d.total_space > 0 {
+                        (used as f64 / d.total_space as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    ctx.push_str(&format!(
+                        "  {} {}/{} ({:.0}%)\n",
+                        truncate_str(&d.mount_point, 20),
+                        format_bytes(used),
+                        format_bytes(d.total_space),
+                        pct,
+                    ));
+                }
+                ctx.push('\n');
+            }
+        }
+
+        // Skipped in light mode: network interfaces, developer processes
+
+        ctx
+    }
 }
 
 /// Group processes by name: (name, count, total_cpu, total_memory)

@@ -82,36 +82,8 @@ pub fn render_dashboard(frame: &mut Frame, area: Rect, state: &AppState) {
         0
     };
     let gpu_height: u16 = if has_gpu { 5 } else { 0 };
-    // Thermal panel: dynamic height based on sensor count
-    let thermal_height: u16 = if has_thermal {
-        let snap = state.thermal.as_ref().unwrap();
-        let mut rows = 2u16; // border + header
-        if snap.cpu_package.is_some() || !snap.cpu_cores.is_empty() {
-            rows += 1; // CPU section header
-            if snap.cpu_package.is_some() {
-                rows += 1;
-            }
-            rows += snap.cpu_cores.len().min(8) as u16;
-        }
-        if snap.gpu_temp.is_some() || snap.gpu_hotspot.is_some() {
-            rows += 1; // separator/label
-            if snap.gpu_temp.is_some() {
-                rows += 1;
-            }
-            if snap.gpu_hotspot.is_some() {
-                rows += 1;
-            }
-        }
-        if !snap.fan_rpms.is_empty() {
-            rows += 1 + snap.fan_rpms.len().min(4) as u16;
-        }
-        if !snap.ssd_temps.is_empty() {
-            rows += 1 + snap.ssd_temps.len().min(4) as u16;
-        }
-        rows.min(20).max(5)
-    } else {
-        0
-    };
+    // Thermal summary: compact 3-row widget (border + 1 line of temps)
+    let thermal_height: u16 = if has_thermal { 3 } else { 0 };
     let docker_height: u16 = if has_docker {
         (state.containers.len() as u16 + 3).min(8)
     } else {
@@ -154,7 +126,7 @@ pub fn render_dashboard(frame: &mut Frame, area: Rect, state: &AppState) {
         render_gpu_panel(frame, chunks[3], state);
     }
     if has_thermal {
-        super::thermal::render_thermal_panel(frame, chunks[4], state);
+        super::thermal::render_dashboard_thermal_summary(frame, chunks[4], state);
     }
     render_network_panel(frame, chunks[5], state);
     render_disk_panel(frame, chunks[6], state);

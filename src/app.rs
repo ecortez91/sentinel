@@ -144,6 +144,10 @@ pub struct App {
     last_insight_time: Option<std::time::Instant>,
     insight_interval: Duration,
     auto_analysis_enabled: bool,
+    /// CPU usage at last auto-analysis (for idle detection).
+    last_insight_cpu: f32,
+    /// Alert count at last auto-analysis (for idle detection).
+    last_insight_alert_count: usize,
 }
 
 impl App {
@@ -365,6 +369,8 @@ impl App {
             last_insight_time: None,
             insight_interval,
             auto_analysis_enabled,
+            last_insight_cpu: 0.0,
+            last_insight_alert_count: 0,
         })
     }
 
@@ -603,18 +609,24 @@ impl App {
         let messages = self.state.ai_conversation.to_api_messages();
         let tx = self.ai_tx.clone();
 
+        // Premium tier: Opus + full context + 4096 tokens
+        let model = CLAUDE_MODEL_PREMIUM.to_string();
+        let max_tokens = CHAT_MAX_TOKENS;
         tokio::spawn(async move {
             let auth = ClaudeClient::discover_auth().await;
             if let Some(auth) = auth {
                 let client = ClaudeClient::new(auth);
-                let _ = client.ask_streaming(&full_system, messages, tx).await;
+                let _ = client
+                    .ask_streaming(&full_system, messages, tx, Some(&model), Some(max_tokens))
+                    .await;
             }
         });
     }
 
     /// Dispatch an auto-analysis request on the insight channel.
+    /// Uses the cheap model (Haiku) + light context to minimize token usage.
     fn dispatch_insight(&self) {
-        let context = ContextBuilder::build(
+        let context = ContextBuilder::build_light(
             self.state.system.as_ref(),
             &self.state.processes,
             &self.state.alerts,
@@ -634,19 +646,25 @@ impl App {
         })];
         let tx = self.insight_tx.clone();
 
+        // Cheap tier: Haiku + light context + 1024 tokens
+        let model = CLAUDE_MODEL_CHEAP.to_string();
+        let max_tokens = AUTO_ANALYSIS_MAX_TOKENS;
         tokio::spawn(async move {
             let auth = ClaudeClient::discover_auth().await;
             if let Some(auth) = auth {
                 let client = ClaudeClient::new(auth);
-                let _ = client.ask_streaming(&full_system, messages, tx).await;
+                let _ = client
+                    .ask_streaming(&full_system, messages, tx, Some(&model), Some(max_tokens))
+                    .await;
             }
         });
     }
 
     /// Dispatch a natural language query from the command palette to the AI.
+    /// Uses the cheap model (Haiku) + light context.
     fn dispatch_command_ai(&mut self, query: &str) {
         self.state.command_ai_loading = true;
-        let context = ContextBuilder::build(
+        let context = ContextBuilder::build_light(
             self.state.system.as_ref(),
             &self.state.processes,
             &self.state.alerts,
@@ -673,16 +691,22 @@ impl App {
         })];
         let tx = self.command_ai_tx.clone();
 
+        // Cheap tier: Haiku + light context + 1024 tokens
+        let model = CLAUDE_MODEL_CHEAP.to_string();
+        let max_tokens = COMMAND_AI_MAX_TOKENS;
         tokio::spawn(async move {
             let auth = ClaudeClient::discover_auth().await;
             if let Some(auth) = auth {
                 let client = ClaudeClient::new(auth);
-                let _ = client.ask_streaming(&full_system, messages, tx).await;
+                let _ = client
+                    .ask_streaming(&full_system, messages, tx, Some(&model), Some(max_tokens))
+                    .await;
             }
         });
     }
 
     /// Dispatch an AI analysis request initiated by a plugin.
+    /// Uses the cheap model (Haiku) + 512 max tokens.
     fn dispatch_plugin_ai(&mut self, plugin_index: usize, context: String) {
         self.plugin_ai_target = Some(plugin_index);
 
@@ -698,11 +722,16 @@ impl App {
         })];
         let tx = self.plugin_ai_tx.clone();
 
+        // Cheap tier: Haiku + plugin context only + 512 tokens
+        let model = CLAUDE_MODEL_CHEAP.to_string();
+        let max_tokens = PLUGIN_AI_MAX_TOKENS;
         tokio::spawn(async move {
             let auth = ClaudeClient::discover_auth().await;
             if let Some(auth) = auth {
                 let client = ClaudeClient::new(auth);
-                let _ = client.ask_streaming(&system_prompt, messages, tx).await;
+                let _ = client
+                    .ask_streaming(&system_prompt, messages, tx, Some(&model), Some(max_tokens))
+                    .await;
             }
         });
     }
@@ -2107,8 +2136,14 @@ impl App {
             ),
 
             _ => {
-                // Natural language fallback: route to AI if available
-                if self.has_key && self.claude_client.is_some() {
+                // Typo guard: don't waste tokens on very short input
+                if input.len() < COMMAND_AI_MIN_INPUT_LEN {
+                    CommandResult::text_only(format!(
+                        "Unknown command: '{}'\nType 'help' for available commands.",
+                        input
+                    ))
+                } else if self.has_key && self.claude_client.is_some() {
+                    // Natural language fallback: route to AI if available
                     self.dispatch_command_ai(input);
                     CommandResult::text_only(format!(
                         "# AI Query: {}\n\nThinking...",
@@ -2295,12 +2330,46 @@ impl App {
             return;
         }
 
+        // Skip if user isn't on the Dashboard tab — no point analyzing
+        // when they can't see the insight card.
+        if self.state.active_tab != Tab::Dashboard {
+            return;
+        }
+
         let should_analyze = match self.last_insight_time {
             None => self.state.tick_count >= STARTUP_SETTLE_TICKS,
             Some(t) => t.elapsed() >= self.insight_interval,
         };
 
         if should_analyze {
+            // Idle detection: skip if system hasn't changed meaningfully
+            // since the last analysis (saves tokens on quiet systems).
+            if self.last_insight_time.is_some() {
+                let current_cpu = self
+                    .state
+                    .system
+                    .as_ref()
+                    .map(|s| s.global_cpu_usage)
+                    .unwrap_or(0.0);
+                let cpu_delta = (current_cpu - self.last_insight_cpu).abs();
+                let alert_delta = self.state.alerts.len() != self.last_insight_alert_count;
+
+                if cpu_delta < AUTO_ANALYSIS_IDLE_CPU_DELTA && !alert_delta {
+                    // System is idle — skip this cycle, try again later
+                    self.last_insight_time = Some(std::time::Instant::now());
+                    return;
+                }
+            }
+
+            // Record current state for next idle comparison
+            self.last_insight_cpu = self
+                .state
+                .system
+                .as_ref()
+                .map(|s| s.global_cpu_usage)
+                .unwrap_or(0.0);
+            self.last_insight_alert_count = self.state.alerts.len();
+
             self.state.ai_insight_loading = true;
             self.state.ai_insight = None;
             self.state.ai_insight_scroll = 0;

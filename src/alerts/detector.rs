@@ -517,6 +517,8 @@ mod tests {
             max_cpu_temp: cpu_pkg.unwrap_or(0.0),
             max_gpu_temp: gpu.unwrap_or(0.0),
             max_ram_temp: 0.0,
+            max_ssd_temp: 0.0,
+            max_motherboard_temp: 0.0,
         }
     }
 

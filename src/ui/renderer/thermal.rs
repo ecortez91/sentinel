@@ -120,6 +120,101 @@ pub fn render_thermal_panel(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Dashboard thermal summary (compact 1-2 line widget replacing full panel)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compact thermal summary for the dashboard — shows max temps per category
+/// in 1-2 lines instead of the full sensor-by-sensor panel.
+///
+/// Format: `CPU: 72°C | GPU: 65°C | RAM: 45°C | MB: 38°C | SSD: 52°C | Peak: 72°C`
+pub fn render_dashboard_thermal_summary(frame: &mut Frame, area: Rect, state: &AppState) {
+    let t = &state.theme;
+    let block = Block::default()
+        .title(Span::styled(" Thermal ", t.header_style()))
+        .borders(Borders::ALL)
+        .border_style(t.border_style());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(snap) = &state.thermal else { return };
+
+    let sep = Span::styled(" | ", Style::default().fg(t.text_muted));
+
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::styled(" ", Style::default()));
+
+    // CPU max
+    if snap.max_cpu_temp > 0.0 {
+        spans.push(Span::styled("CPU:", Style::default().fg(t.text_dim)));
+        spans.push(Span::styled(
+            format!("{:.0}°C", snap.max_cpu_temp),
+            Style::default().fg(temp_color(snap.max_cpu_temp)),
+        ));
+        spans.push(sep.clone());
+    }
+
+    // GPU max
+    if snap.max_gpu_temp > 0.0 {
+        spans.push(Span::styled("GPU:", Style::default().fg(t.text_dim)));
+        spans.push(Span::styled(
+            format!("{:.0}°C", snap.max_gpu_temp),
+            Style::default().fg(temp_color(snap.max_gpu_temp)),
+        ));
+        spans.push(sep.clone());
+    }
+
+    // RAM max
+    if snap.max_ram_temp > 0.0 {
+        spans.push(Span::styled("RAM:", Style::default().fg(t.text_dim)));
+        spans.push(Span::styled(
+            format!("{:.0}°C", snap.max_ram_temp),
+            Style::default().fg(temp_color(snap.max_ram_temp)),
+        ));
+        spans.push(sep.clone());
+    }
+
+    // Motherboard max
+    if snap.max_motherboard_temp > 0.0 {
+        spans.push(Span::styled("MB:", Style::default().fg(t.text_dim)));
+        spans.push(Span::styled(
+            format!("{:.0}°C", snap.max_motherboard_temp),
+            Style::default().fg(temp_color(snap.max_motherboard_temp)),
+        ));
+        spans.push(sep.clone());
+    }
+
+    // SSD max
+    if snap.max_ssd_temp > 0.0 {
+        spans.push(Span::styled("SSD:", Style::default().fg(t.text_dim)));
+        spans.push(Span::styled(
+            format!("{:.0}°C", snap.max_ssd_temp),
+            Style::default().fg(temp_color(snap.max_ssd_temp)),
+        ));
+        spans.push(sep.clone());
+    }
+
+    // Overall peak
+    spans.push(Span::styled("Peak:", Style::default().fg(t.text_dim)));
+    spans.push(Span::styled(
+        format!("{:.0}°C", snap.max_temp),
+        Style::default()
+            .fg(temp_color(snap.max_temp))
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    // Fan count summary if available
+    if !snap.fan_rpms.is_empty() {
+        let active = snap.fan_rpms.iter().filter(|f| f.value > 0.0).count();
+        spans.push(Span::styled(
+            format!("  Fans:{}/{}", active, snap.fan_rpms.len()),
+            Style::default().fg(t.text_muted),
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), inner);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Full-screen Thermal tab
 // ─────────────────────────────────────────────────────────────────────────────
 

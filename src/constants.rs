@@ -17,7 +17,8 @@ pub const REFRESH_THROTTLE_TICKS: u64 = 20;
 /// Ticks to wait after startup before first auto-analysis.
 pub const STARTUP_SETTLE_TICKS: u64 = 5;
 /// Default auto-analysis interval (seconds, 0 = disabled).
-pub const DEFAULT_AUTO_ANALYSIS_SECS: u64 = 300;
+/// Disabled by default to save tokens — users opt in via config.
+pub const DEFAULT_AUTO_ANALYSIS_SECS: u64 = 0;
 /// Docker container polling interval (seconds).
 pub const DOCKER_POLL_SECS: u64 = 5;
 /// Status message display duration (seconds).
@@ -31,7 +32,7 @@ pub const INITIAL_SETTLE_MS: u64 = 250;
 /// History buffer capacity (1 hour at 1 sample/sec).
 pub const HISTORY_CAPACITY: usize = 3600;
 /// Maximum conversation messages to retain.
-pub const MAX_CONVERSATION_HISTORY: usize = 50;
+pub const MAX_CONVERSATION_HISTORY: usize = 20;
 /// Maximum alerts to keep in history.
 pub const DEFAULT_MAX_ALERTS: usize = 200;
 /// Minimum max_alerts floor.
@@ -272,9 +273,24 @@ pub const DEFAULT_SHUTDOWN_SCHEDULE_END: u8 = 24;
 pub const SHUTDOWN_GRACE_PERIOD_SECS: u64 = 30;
 
 // ── AI / Claude API ───────────────────────────────────────────────
-/// Claude model identifier.
-pub const CLAUDE_MODEL: &str = "claude-opus-4-6";
-/// Maximum tokens for Claude responses.
+/// Premium model — used only for interactive chat and process questions.
+pub const CLAUDE_MODEL_PREMIUM: &str = "claude-opus-4-6";
+/// Middle-tier model — balanced quality/cost for general-purpose tasks.
+pub const CLAUDE_MODEL_MIDDLE: &str = "claude-sonnet-4-6";
+/// Cheap model — used for auto-analysis, command palette, and plugin AI.
+pub const CLAUDE_MODEL_CHEAP: &str = "claude-haiku-4-5";
+/// Legacy alias (kept for ClaudeClient default construction — uses middle tier).
+pub const CLAUDE_MODEL: &str = CLAUDE_MODEL_MIDDLE;
+
+/// Max tokens: interactive chat (premium).
+pub const CHAT_MAX_TOKENS: u32 = 4096;
+/// Max tokens: auto-analysis dashboard insight (cheap).
+pub const AUTO_ANALYSIS_MAX_TOKENS: u32 = 1024;
+/// Max tokens: command palette AI fallback (cheap).
+pub const COMMAND_AI_MAX_TOKENS: u32 = 1024;
+/// Max tokens: plugin-initiated AI analysis (cheap).
+pub const PLUGIN_AI_MAX_TOKENS: u32 = 512;
+/// Legacy alias (kept for fallback).
 pub const CLAUDE_MAX_TOKENS: u32 = 4096;
 /// Claude API version string.
 pub const CLAUDE_API_VERSION: &str = "2023-06-01";
@@ -286,6 +302,8 @@ pub const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub const TOKEN_EXPIRY_BUFFER_MS: i64 = 5 * 60 * 1000;
 /// Context builder initial string capacity.
 pub const CONTEXT_INITIAL_CAPACITY: usize = 8192;
+
+// Full context limits (interactive chat)
 /// Top processes by CPU to include in AI context.
 pub const CONTEXT_TOP_CPU_COUNT: usize = 25;
 /// Top processes by memory to include in AI context.
@@ -298,6 +316,22 @@ pub const CONTEXT_MAX_ALERTS: usize = 30;
 pub const CONTEXT_MAX_NET_INTERFACES: usize = 10;
 /// Maximum command line length in AI context.
 pub const CONTEXT_MAX_CMD_LEN: usize = 120;
+
+// Light context limits (auto-analysis, command palette — saves ~50-60% input tokens)
+/// Top processes by CPU in light context.
+pub const CONTEXT_LIGHT_TOP_CPU: usize = 10;
+/// Top processes by memory in light context.
+pub const CONTEXT_LIGHT_TOP_MEM: usize = 5;
+/// Maximum process groups in light context.
+pub const CONTEXT_LIGHT_MAX_GROUPS: usize = 5;
+/// Maximum alerts in light context.
+pub const CONTEXT_LIGHT_MAX_ALERTS: usize = 10;
+
+// Command palette AI guard
+/// Minimum input length before routing to AI (prevents typo triggers).
+pub const COMMAND_AI_MIN_INPUT_LEN: usize = 5;
+/// CPU delta threshold for idle detection (percentage points).
+pub const AUTO_ANALYSIS_IDLE_CPU_DELTA: f32 = 5.0;
 
 // ── Prometheus Metrics ────────────────────────────────────────────
 /// Prometheus metrics output buffer initial capacity.
@@ -376,4 +410,67 @@ pub fn env_file_path() -> PathBuf {
 /// Returns `~/.local/share/sentinel/`.
 pub fn data_dir() -> PathBuf {
     home_dir().join(".local").join("share").join("sentinel")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Model tier identity tests ────────────────────────────────
+
+    #[test]
+    fn model_premium_is_opus() {
+        assert_eq!(CLAUDE_MODEL_PREMIUM, "claude-opus-4-6");
+    }
+
+    #[test]
+    fn model_middle_is_sonnet() {
+        assert_eq!(CLAUDE_MODEL_MIDDLE, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn model_cheap_is_haiku() {
+        assert_eq!(CLAUDE_MODEL_CHEAP, "claude-haiku-4-5");
+    }
+
+    #[test]
+    fn model_legacy_alias_equals_middle() {
+        assert_eq!(
+            CLAUDE_MODEL, CLAUDE_MODEL_MIDDLE,
+            "Legacy CLAUDE_MODEL should alias to middle tier, not premium"
+        );
+    }
+
+    // ── Model string format validation ───────────────────────────
+
+    #[test]
+    fn all_models_start_with_claude_prefix() {
+        for (label, model) in [
+            ("PREMIUM", CLAUDE_MODEL_PREMIUM),
+            ("MIDDLE", CLAUDE_MODEL_MIDDLE),
+            ("CHEAP", CLAUDE_MODEL_CHEAP),
+        ] {
+            assert!(
+                model.starts_with("claude-"),
+                "{} model '{}' should start with 'claude-'",
+                label,
+                model
+            );
+        }
+    }
+
+    #[test]
+    fn all_model_tiers_are_distinct() {
+        assert_ne!(CLAUDE_MODEL_PREMIUM, CLAUDE_MODEL_MIDDLE);
+        assert_ne!(CLAUDE_MODEL_MIDDLE, CLAUDE_MODEL_CHEAP);
+        assert_ne!(CLAUDE_MODEL_PREMIUM, CLAUDE_MODEL_CHEAP);
+    }
+
+    #[test]
+    fn premium_is_not_used_as_default() {
+        assert_ne!(
+            CLAUDE_MODEL, CLAUDE_MODEL_PREMIUM,
+            "Default model must not be the premium tier to avoid unnecessary cost"
+        );
+    }
 }

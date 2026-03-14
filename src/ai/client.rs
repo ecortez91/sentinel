@@ -176,12 +176,21 @@ impl ClaudeClient {
     }
 
     /// Send a question with system context, streaming chunks back via channel.
+    ///
+    /// `model_override` and `max_tokens_override` allow per-request control
+    /// for model tiering (e.g. Haiku for auto-analysis, Opus for chat).
+    /// Pass `None` to use the client's defaults.
     pub async fn ask_streaming(
         &self,
         system_prompt: &str,
         messages: Vec<Value>,
         tx: mpsc::UnboundedSender<AiEvent>,
+        model_override: Option<&str>,
+        max_tokens_override: Option<u32>,
     ) -> Result<()> {
+        let model = model_override.unwrap_or(&self.model);
+        let max_tokens = max_tokens_override.unwrap_or(CLAUDE_MAX_TOKENS);
+
         // OAuth tokens require the system prompt to start with Claude Code identity
         let system_value = if self.is_oauth() {
             serde_json::json!([
@@ -193,8 +202,8 @@ impl ClaudeClient {
         };
 
         let body = serde_json::json!({
-            "model": self.model,
-            "max_tokens": CLAUDE_MAX_TOKENS,
+            "model": model,
+            "max_tokens": max_tokens,
             "stream": true,
             "system": system_value,
             "messages": messages,

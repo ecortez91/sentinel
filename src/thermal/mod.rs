@@ -52,6 +52,10 @@ pub struct ThermalSnapshot {
     pub max_gpu_temp: f32,
     /// Maximum RAM temperature.
     pub max_ram_temp: f32,
+    /// Maximum SSD / NVMe temperature.
+    pub max_ssd_temp: f32,
+    /// Maximum motherboard / chipset temperature.
+    pub max_motherboard_temp: f32,
 }
 
 impl ThermalSnapshot {
@@ -248,6 +252,8 @@ pub fn parse_lhm_json(json_str: &str) -> Option<ThermalSnapshot> {
         max_cpu_temp: 0.0,
         max_gpu_temp: 0.0,
         max_ram_temp: 0.0,
+        max_ssd_temp: 0.0,
+        max_motherboard_temp: 0.0,
     };
 
     for sensor in &sensors {
@@ -298,6 +304,9 @@ pub fn parse_lhm_json(json_str: &str) -> Option<ThermalSnapshot> {
                     if sensor.value > snapshot.max_temp {
                         snapshot.max_temp = sensor.value;
                     }
+                    if sensor.value > snapshot.max_ssd_temp {
+                        snapshot.max_ssd_temp = sensor.value;
+                    }
                     snapshot.ssd_temps.push(SensorReading {
                         name: format_storage_name(&sensor.hardware_path, &sensor.name),
                         value: sensor.value,
@@ -325,10 +334,16 @@ pub fn parse_lhm_json(json_str: &str) -> Option<ThermalSnapshot> {
                         },
                         value: sensor.value,
                     });
-                    // Motherboard CPU socket sensor should NOT inflate max_temp —
-                    // it's a less accurate proxy read by the Super I/O chip.
-                    if !is_mb_cpu && sensor.value > snapshot.max_temp {
-                        snapshot.max_temp = sensor.value;
+                    // Motherboard CPU socket sensor should NOT inflate max_temp
+                    // or max_motherboard_temp — it's a less accurate proxy read
+                    // by the Super I/O chip.
+                    if !is_mb_cpu {
+                        if sensor.value > snapshot.max_temp {
+                            snapshot.max_temp = sensor.value;
+                        }
+                        if sensor.value > snapshot.max_motherboard_temp {
+                            snapshot.max_motherboard_temp = sensor.value;
+                        }
                     }
                 }
             }
@@ -618,6 +633,15 @@ impl ThermalSnapshot {
 
         lines.push(format!("Max CPU: {:.1}°C", self.max_cpu_temp));
         lines.push(format!("Max GPU: {:.1}°C", self.max_gpu_temp));
+        if self.max_ram_temp > 0.0 {
+            lines.push(format!("Max RAM: {:.1}°C", self.max_ram_temp));
+        }
+        if self.max_ssd_temp > 0.0 {
+            lines.push(format!("Max SSD: {:.1}°C", self.max_ssd_temp));
+        }
+        if self.max_motherboard_temp > 0.0 {
+            lines.push(format!("Max MB: {:.1}°C", self.max_motherboard_temp));
+        }
         lines.push(format!("Overall Max: {:.1}°C", self.max_temp));
 
         lines.join("\n")
