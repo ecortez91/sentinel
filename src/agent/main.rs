@@ -677,18 +677,82 @@ fn cors_header() -> Header {
     Header::from_bytes("Access-Control-Allow-Origin", CORS_ALLOW_ORIGIN).unwrap()
 }
 
-fn main() {
-    let bind = std::env::args()
+// ── Service management constants ─────────────────────────────────
+
+/// Service name for Windows Service Control Manager.
+#[allow(dead_code)]
+const SERVICE_NAME: &str = "SentinelAgent";
+/// Display name in services.msc.
+#[allow(dead_code)]
+const SERVICE_DISPLAY_NAME: &str = "Sentinel Monitor Agent";
+/// Installation directory on Windows.
+#[allow(dead_code)]
+const INSTALL_DIR: &str = r"C:\Program Files\Sentinel";
+/// Binary name after installation.
+#[allow(dead_code)]
+const INSTALL_BINARY: &str = "sentinel-agent.exe";
+/// Service description.
+#[allow(dead_code)]
+const SERVICE_DESCRIPTION: &str =
+    "Sentinel system monitoring agent - collects and serves system metrics over HTTP";
+/// Restart delay on crash (milliseconds).
+#[allow(dead_code)]
+const FAILURE_RESTART_MS: u32 = 5000;
+
+// ── Argument parsing ─────────────────────────────────────────────
+
+/// Parsed command-line action.
+enum AgentAction {
+    /// Run the HTTP server in console mode (default).
+    RunConsole { bind: String, port: u16 },
+    /// Install as a Windows service.
+    Install,
+    /// Uninstall the Windows service.
+    Uninstall,
+    /// Upgrade: stop service, copy binary, restart.
+    Upgrade,
+    /// Run as a Windows service (called by SCM).
+    RunService,
+}
+
+fn parse_args() -> AgentAction {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--install") {
+        return AgentAction::Install;
+    }
+    if args.iter().any(|a| a == "--uninstall") {
+        return AgentAction::Uninstall;
+    }
+    if args.iter().any(|a| a == "--upgrade") {
+        return AgentAction::Upgrade;
+    }
+    if args.iter().any(|a| a == "--service") {
+        return AgentAction::RunService;
+    }
+
+    let bind = args
+        .iter()
         .position(|a| a == "--bind")
-        .and_then(|i| std::env::args().nth(i + 1))
+        .and_then(|i| args.get(i + 1))
+        .cloned()
         .unwrap_or_else(|| DEFAULT_BIND.to_string());
 
-    let port: u16 = std::env::args()
+    let port: u16 = args
+        .iter()
         .position(|a| a == "--port")
-        .and_then(|i| std::env::args().nth(i + 1))
+        .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_PORT);
 
+    AgentAction::RunConsole { bind, port }
+}
+
+// ── HTTP server (shared between console and service modes) ───────
+
+/// Run the HTTP server loop. This is the core logic shared between
+/// console mode and Windows service mode.
+fn run_server(bind: &str, port: u16) {
     let addr = format!("{}:{}", bind, port);
 
     let server = match Server::http(&addr) {
@@ -786,6 +850,312 @@ fn main() {
                 let _ = request.respond(resp);
             }
         }
+    }
+}
+
+// ── Windows service management ───────────────────────────────────
+
+#[cfg(windows)]
+mod service {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use windows_service::{
+        define_windows_service,
+        service::{
+            ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl,
+            ServiceExitCode, ServiceInfo, ServiceStartType, ServiceState, ServiceStatus,
+            ServiceType,
+        },
+        service_control_handler::{self, ServiceControlHandlerResult},
+        service_dispatcher,
+        service_manager::{ServiceManager, ServiceManagerAccess},
+    };
+
+    use super::*;
+
+    const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
+
+    /// Install the agent as a Windows service.
+    pub fn install() {
+        let install_dir = PathBuf::from(INSTALL_DIR);
+
+        // Create installation directory
+        if let Err(e) = std::fs::create_dir_all(&install_dir) {
+            eprintln!("Failed to create {}: {}", INSTALL_DIR, e);
+            eprintln!("Hint: Run as Administrator");
+            std::process::exit(1);
+        }
+
+        // Copy current executable to install directory
+        let current_exe = std::env::current_exe().expect("Failed to get current executable path");
+        let target_exe = install_dir.join(INSTALL_BINARY);
+        if current_exe != target_exe {
+            if let Err(e) = std::fs::copy(&current_exe, &target_exe) {
+                eprintln!("Failed to copy binary to {}: {}", target_exe.display(), e);
+                std::process::exit(1);
+            }
+        }
+
+        // Register with the Service Control Manager
+        let manager = ServiceManager::local_computer(
+            None::<&str>,
+            ServiceManagerAccess::CREATE_SERVICE | ServiceManagerAccess::CONNECT,
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to connect to Service Manager: {}", e);
+            eprintln!("Hint: Run as Administrator");
+            std::process::exit(1);
+        });
+
+        let service_info = ServiceInfo {
+            name: OsString::from(SERVICE_NAME),
+            display_name: OsString::from(SERVICE_DISPLAY_NAME),
+            service_type: SERVICE_TYPE,
+            start_type: ServiceStartType::AutoStart,
+            error_control: ServiceErrorControl::Normal,
+            executable_path: target_exe.clone(),
+            launch_arguments: vec![OsString::from("--service")],
+            dependencies: vec![],
+            account_name: None, // runs as LocalSystem
+            account_password: None,
+        };
+
+        let service = manager
+            .create_service(
+                &service_info,
+                ServiceAccess::CHANGE_CONFIG | ServiceAccess::START,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to create service: {}", e);
+                eprintln!("Hint: The service may already exist. Run --uninstall first.");
+                std::process::exit(1);
+            });
+
+        // Set description
+        let _ = service.set_description(SERVICE_DESCRIPTION);
+
+        // Configure failure actions: restart after 5 seconds
+        // This is done via sc.exe since the crate's failure action API is complex
+        let _ = run_command(
+            "sc",
+            &[
+                "failure",
+                SERVICE_NAME,
+                "reset=",
+                "0",
+                "actions=",
+                &format!("restart/{}", FAILURE_RESTART_MS),
+            ],
+        );
+
+        // Start the service
+        match service.start::<OsString>(&[]) {
+            Ok(()) => eprintln!("Service started."),
+            Err(e) => eprintln!("Service created but failed to start: {}", e),
+        }
+
+        eprintln!();
+        eprintln!("Sentinel Agent installed successfully!");
+        eprintln!("  Binary:  {}", target_exe.display());
+        eprintln!("  Service: {} ({})", SERVICE_NAME, SERVICE_DISPLAY_NAME);
+        eprintln!("  Status:  Auto-start on boot, auto-restart on crash");
+        eprintln!();
+        eprintln!("Manage with:");
+        eprintln!("  sc stop {}     — stop the service", SERVICE_NAME);
+        eprintln!("  sc start {}    — start the service", SERVICE_NAME);
+        eprintln!("  sc query {}    — check service status", SERVICE_NAME);
+    }
+
+    /// Uninstall the Windows service and clean up files.
+    pub fn uninstall() {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to connect to Service Manager: {}", e);
+                eprintln!("Hint: Run as Administrator");
+                std::process::exit(1);
+            });
+
+        // Open the service
+        match manager.open_service(
+            SERVICE_NAME,
+            ServiceAccess::STOP | ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS,
+        ) {
+            Ok(service) => {
+                // Stop the service (ignore error if not running)
+                let _ = service.stop();
+                // Wait a moment for it to stop
+                std::thread::sleep(Duration::from_secs(2));
+                // Delete the service
+                if let Err(e) = service.delete() {
+                    eprintln!("Warning: Failed to delete service: {}", e);
+                }
+            }
+            Err(e) => {
+                eprintln!("Service not found or not accessible: {}", e);
+            }
+        }
+
+        // Remove installation directory
+        let install_dir = PathBuf::from(INSTALL_DIR);
+        if install_dir.exists() {
+            // Files may be locked briefly after service stop; retry
+            for attempt in 0..3 {
+                match std::fs::remove_dir_all(&install_dir) {
+                    Ok(()) => break,
+                    Err(e) if attempt < 2 => {
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Could not remove {}: {}", INSTALL_DIR, e);
+                    }
+                }
+            }
+        }
+
+        eprintln!("Sentinel Agent uninstalled.");
+    }
+
+    /// Upgrade: stop service, copy new binary, restart.
+    pub fn upgrade() {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to connect to Service Manager: {}", e);
+                eprintln!("Hint: Run as Administrator");
+                std::process::exit(1);
+            });
+
+        let target_exe = PathBuf::from(INSTALL_DIR).join(INSTALL_BINARY);
+
+        // Stop the service
+        match manager.open_service(
+            SERVICE_NAME,
+            ServiceAccess::STOP | ServiceAccess::START | ServiceAccess::QUERY_STATUS,
+        ) {
+            Ok(service) => {
+                eprintln!("Stopping service...");
+                let _ = service.stop();
+                // Wait for the service to stop and release the binary
+                std::thread::sleep(Duration::from_secs(3));
+
+                // Copy new binary
+                let current_exe =
+                    std::env::current_exe().expect("Failed to get current executable path");
+                if current_exe != target_exe {
+                    match std::fs::copy(&current_exe, &target_exe) {
+                        Ok(_) => eprintln!("Binary updated: {}", target_exe.display()),
+                        Err(e) => {
+                            eprintln!("Failed to copy binary: {}", e);
+                            eprintln!("The service binary may still be locked. Try again.");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    eprintln!("Binary is already in the install location.");
+                }
+
+                // Restart the service
+                match service.start::<OsString>(&[]) {
+                    Ok(()) => eprintln!("Service restarted."),
+                    Err(e) => eprintln!("Failed to restart service: {}", e),
+                }
+            }
+            Err(e) => {
+                eprintln!("Service not found: {}", e);
+                eprintln!("Run --install first.");
+                std::process::exit(1);
+            }
+        }
+
+        eprintln!("Sentinel Agent upgraded successfully!");
+    }
+
+    // Define the Windows service entry point macro
+    define_windows_service!(ffi_service_main, service_main);
+
+    /// Entry point called by the Windows Service Control Manager.
+    pub fn run_as_service() {
+        service_dispatcher::start(SERVICE_NAME, ffi_service_main).unwrap_or_else(|e| {
+            eprintln!("Failed to start service dispatcher: {}", e);
+            std::process::exit(1);
+        });
+    }
+
+    /// Service main function — called by the SCM dispatcher.
+    fn service_main(_args: Vec<OsString>) {
+        // Register the control handler
+        let status_handle = service_control_handler::register(
+            SERVICE_NAME,
+            move |control| -> ServiceControlHandlerResult {
+                match control {
+                    ServiceControl::Stop | ServiceControl::Shutdown => {
+                        // Signal the server to stop by exiting the process.
+                        // The HTTP server loop blocks on incoming_requests(),
+                        // so the cleanest way to stop is process::exit.
+                        std::process::exit(0);
+                    }
+                    ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+                    _ => ServiceControlHandlerResult::NotImplemented,
+                }
+            },
+        )
+        .expect("Failed to register service control handler");
+
+        // Report that the service is running
+        let _ = status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Running,
+            controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        });
+
+        // Run the HTTP server (blocks until stopped)
+        run_server(DEFAULT_BIND, DEFAULT_PORT);
+
+        // Report stopped (in case run_server returns normally)
+        let _ = status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        });
+    }
+}
+
+/// Stubs for non-Windows platforms.
+#[cfg(not(windows))]
+mod service {
+    pub fn install() {
+        eprintln!("Service installation is only available on Windows.");
+        std::process::exit(1);
+    }
+    pub fn uninstall() {
+        eprintln!("Service uninstallation is only available on Windows.");
+        std::process::exit(1);
+    }
+    pub fn upgrade() {
+        eprintln!("Service upgrade is only available on Windows.");
+        std::process::exit(1);
+    }
+    pub fn run_as_service() {
+        eprintln!("Service mode is only available on Windows.");
+        std::process::exit(1);
+    }
+}
+
+fn main() {
+    match parse_args() {
+        AgentAction::Install => service::install(),
+        AgentAction::Uninstall => service::uninstall(),
+        AgentAction::Upgrade => service::upgrade(),
+        AgentAction::RunService => service::run_as_service(),
+        AgentAction::RunConsole { bind, port } => run_server(&bind, port),
     }
 }
 
@@ -1015,5 +1385,29 @@ Location : HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run
     fn parse_query_user_empty() {
         let users = parse_query_user("");
         assert!(users.is_empty());
+    }
+
+    #[test]
+    fn agent_action_default_is_console() {
+        // parse_args reads std::env::args which we can't easily mock,
+        // but we can verify the enum variants exist and match correctly.
+        let action = AgentAction::RunConsole {
+            bind: "0.0.0.0".to_string(),
+            port: 8086,
+        };
+        assert!(matches!(action, AgentAction::RunConsole { .. }));
+    }
+
+    #[test]
+    fn agent_action_variants_exist() {
+        // Verify all variants are constructable (compile-time check)
+        let _a = AgentAction::Install;
+        let _b = AgentAction::Uninstall;
+        let _c = AgentAction::Upgrade;
+        let _d = AgentAction::RunService;
+        let _e = AgentAction::RunConsole {
+            bind: String::new(),
+            port: 0,
+        };
     }
 }

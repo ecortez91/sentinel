@@ -186,6 +186,19 @@ pub const STANDARD_PORTS: &[u16] = &[80, 443, 53, 22, 8080, 8443, 3306, 5432, 63
 /// Threshold for "stale Windows updates" alert (days).
 pub const WINDOWS_UPDATE_STALE_DAYS: u64 = 30;
 
+// ── Windows Service (agent install/uninstall) ────────────────────
+/// Windows Service name (used with sc.exe and SCM).
+pub const AGENT_SERVICE_NAME: &str = "SentinelAgent";
+/// Windows Service display name (shown in services.msc).
+pub const AGENT_DISPLAY_NAME: &str = "Sentinel Monitor Agent";
+/// Installation directory on Windows.
+pub const AGENT_INSTALL_DIR: &str = r"C:\Program Files\Sentinel";
+/// Service description shown in services.msc.
+pub const AGENT_SERVICE_DESCRIPTION: &str =
+    "Sentinel system monitoring agent - collects and serves system metrics over HTTP";
+/// Delay before auto-restart on service crash (milliseconds).
+pub const AGENT_FAILURE_RESTART_MS: u32 = 5000;
+
 // ── Windows Security Score Penalties ──────────────────────────────
 /// Score penalty when a Windows Firewall profile is disabled.
 pub const SCORE_PENALTY_FIREWALL_OFF: u8 = 15;

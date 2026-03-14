@@ -47,33 +47,29 @@ cargo build --release --bin sentinel-agent --target x86_64-pc-windows-gnu
 The binary will be at `target/x86_64-pc-windows-gnu/release/sentinel-agent.exe`.
 Copy it to a location on the Windows host.
 
-## Step 2: Run the Agent on Windows
+## Step 2: Install the Agent as a Windows Service
+
+Open PowerShell **as Administrator** (right-click → "Run as Administrator"):
 
 ```powershell
-# Default: listen on all interfaces, port 8086
-sentinel-agent.exe
-
-# Custom port
-sentinel-agent.exe --port 9090
-
-# Localhost only (no external access)
-sentinel-agent.exe --bind 127.0.0.1
+.\sentinel-agent.exe --install
 ```
 
-On startup, the agent prints:
+This automatically:
+- Creates `C:\Program Files\Sentinel\` and copies the binary there
+- Registers `SentinelAgent` as a Windows Service
+- Configures **auto-start on boot** and **auto-restart on crash** (5s delay)
+- Starts the service immediately
 
-```
-sentinel-agent v0.3.0 listening on 0.0.0.0:8086
-Endpoints:
-  GET /api/snapshot  - system snapshot
-  GET /api/status    - agent health
-```
+Windows Firewall will prompt you on first run — click **Allow**.
 
 ### Verify it works
 
-From PowerShell:
-
 ```powershell
+# Check service status
+sc query SentinelAgent
+
+# Check the HTTP endpoint
 Invoke-RestMethod http://localhost:8086/api/status
 ```
 
@@ -83,20 +79,43 @@ From WSL2:
 curl http://$(grep nameserver /etc/resolv.conf | awk '{print $2}'):8086/api/status
 ```
 
-You should see JSON like:
+### Updating the Agent
 
-```json
-{"version":"0.3.0","uptime_secs":42,"collecting":true}
-```
-
-### Run as a background service (optional)
-
-To keep the agent running after logout, you can use Task Scheduler or NSSM:
+When you rebuild the agent with new features, update the installed service:
 
 ```powershell
-# Using NSSM (Non-Sucking Service Manager)
-nssm install SentinelAgent "C:\path\to\sentinel-agent.exe"
-nssm start SentinelAgent
+# Run as Administrator
+.\sentinel-agent.exe --upgrade
+```
+
+This stops the service, copies the new binary over the old one, and restarts.
+
+### Uninstalling
+
+```powershell
+# Run as Administrator
+.\sentinel-agent.exe --uninstall
+```
+
+This stops the service, removes it from Windows, and deletes the install directory.
+
+### Manual Service Control
+
+```powershell
+sc stop SentinelAgent     # Stop the service
+sc start SentinelAgent    # Start the service
+sc query SentinelAgent    # Check status
+services.msc              # Open Services GUI (find "Sentinel Monitor Agent")
+```
+
+### Console Mode (for debugging)
+
+To run the agent in the foreground (not as a service):
+
+```powershell
+sentinel-agent.exe                      # listen on 0.0.0.0:8086
+sentinel-agent.exe --port 9090          # custom port
+sentinel-agent.exe --bind 127.0.0.1     # localhost only
 ```
 
 ## Step 3: Configure Sentinel TUI
