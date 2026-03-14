@@ -8,13 +8,15 @@ pub mod models;
 pub mod renderer;
 pub mod state;
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{layout::Rect, Frame};
 use tokio::sync::mpsc;
 
-use crate::constants::{ENV_AGENT_URL, PAGE_SIZE};
+use crate::constants::{ALERT_COOLDOWN_SECS, ENV_AGENT_URL, PAGE_SIZE, WINDOWS_UPDATE_STALE_DAYS};
+use crate::models::{Alert, AlertCategory, AlertSeverity};
 use crate::plugins::{Plugin, PluginAction};
 use crate::ui::glyphs::Glyphs;
 use crate::ui::theme::Theme;
@@ -45,6 +47,8 @@ pub struct WindowsPlugin {
     poll_interval_secs: u64,
     /// Whether the plugin is enabled.
     enabled: bool,
+    /// Alert cooldowns keyed by (pseudo_pid, category) to prevent duplicates.
+    alert_cooldowns: HashMap<(u32, AlertCategory), Instant>,
 }
 
 impl WindowsPlugin {
@@ -63,6 +67,7 @@ impl WindowsPlugin {
             agent_url,
             poll_interval_secs,
             enabled,
+            alert_cooldowns: HashMap::new(),
         }
     }
 
@@ -308,6 +313,108 @@ impl Plugin for WindowsPlugin {
             _ => None,
         }
     }
+
+    fn security_alerts(&mut self) -> Vec<Alert> {
+        let snap = match &self.state.snapshot {
+            Some(s) => s,
+            None => return Vec::new(),
+        };
+        let sec = match &snap.security {
+            Some(s) => s,
+            None => return Vec::new(),
+        };
+
+        let mut raw_alerts = Vec::new();
+        let hostname = &snap.hostname;
+
+        // Firewall profile OFF alerts
+        for profile in &sec.firewall_profiles {
+            if !profile.enabled {
+                // Use a pseudo-PID based on profile name for cooldown dedup
+                let pseudo_pid = profile.name.bytes().fold(10000u32, |acc, b| acc.wrapping_add(b as u32));
+                raw_alerts.push(Alert::new(
+                    AlertSeverity::Warning,
+                    AlertCategory::WindowsFirewall,
+                    hostname,
+                    pseudo_pid,
+                    format!(
+                        "Windows Firewall is OFF on {} profile ({})",
+                        profile.name, hostname
+                    ),
+                    0.0,
+                    1.0,
+                ));
+            }
+        }
+
+        // Defender disabled
+        if let Some(false) = sec.defender_enabled {
+            raw_alerts.push(Alert::new(
+                AlertSeverity::Danger,
+                AlertCategory::WindowsDefender,
+                hostname,
+                20000,
+                format!("Windows Defender is disabled ({})", hostname),
+                0.0,
+                1.0,
+            ));
+        }
+
+        // Defender real-time protection OFF
+        if let Some(false) = sec.defender_realtime {
+            // Only alert if Defender itself is enabled — if Defender is off,
+            // the above alert already covers it.
+            if sec.defender_enabled != Some(false) {
+                raw_alerts.push(Alert::new(
+                    AlertSeverity::Warning,
+                    AlertCategory::WindowsDefender,
+                    hostname,
+                    20001,
+                    format!(
+                        "Windows Defender real-time protection is OFF ({})",
+                        hostname
+                    ),
+                    0.0,
+                    1.0,
+                ));
+            }
+        }
+
+        // Stale Windows updates
+        if let Some(days) = sec.last_update_days {
+            if days > WINDOWS_UPDATE_STALE_DAYS {
+                raw_alerts.push(Alert::new(
+                    AlertSeverity::Warning,
+                    AlertCategory::WindowsUpdates,
+                    hostname,
+                    30000,
+                    format!(
+                        "Windows not updated in {} days ({})",
+                        days, hostname
+                    ),
+                    days as f64,
+                    WINDOWS_UPDATE_STALE_DAYS as f64,
+                ));
+            }
+        }
+
+        // Apply cooldown dedup (same pattern as AlertDetector)
+        let now = Instant::now();
+        let cooldown = std::time::Duration::from_secs(ALERT_COOLDOWN_SECS);
+        raw_alerts
+            .into_iter()
+            .filter(|alert| {
+                let key = (alert.pid, alert.category);
+                match self.alert_cooldowns.get(&key) {
+                    Some(last_fired) if now.duration_since(*last_fired) < cooldown => false,
+                    _ => {
+                        self.alert_cooldowns.insert(key, now);
+                        true
+                    }
+                }
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -524,6 +631,107 @@ mod tests {
 
         plugin.handle_key(make_key(KeyCode::Char('f')));
         assert!(plugin.state.focused_panel.is_none());
+    }
+
+    #[test]
+    fn security_alerts_firewall_off() {
+        let mut plugin = make_plugin();
+        let mut snap = make_snapshot();
+        snap.security = Some(models::WindowsSecurityStatus {
+            firewall_profiles: vec![
+                models::WindowsFirewallProfile { name: "Domain".into(), enabled: true },
+                models::WindowsFirewallProfile { name: "Public".into(), enabled: false },
+            ],
+            defender_enabled: Some(true),
+            defender_realtime: Some(true),
+            last_update_days: Some(5),
+        });
+        plugin.state.snapshot = Some(snap);
+
+        let alerts = plugin.security_alerts();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].category, AlertCategory::WindowsFirewall);
+        assert!(alerts[0].message.contains("Public"));
+    }
+
+    #[test]
+    fn security_alerts_defender_off() {
+        let mut plugin = make_plugin();
+        let mut snap = make_snapshot();
+        snap.security = Some(models::WindowsSecurityStatus {
+            firewall_profiles: vec![],
+            defender_enabled: Some(false),
+            defender_realtime: Some(false),
+            last_update_days: None,
+        });
+        plugin.state.snapshot = Some(snap);
+
+        let alerts = plugin.security_alerts();
+        // Should fire Defender disabled (but NOT realtime, since Defender is off)
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].category, AlertCategory::WindowsDefender);
+        assert_eq!(alerts[0].severity, AlertSeverity::Danger);
+    }
+
+    #[test]
+    fn security_alerts_stale_updates() {
+        let mut plugin = make_plugin();
+        let mut snap = make_snapshot();
+        snap.security = Some(models::WindowsSecurityStatus {
+            firewall_profiles: vec![],
+            defender_enabled: Some(true),
+            defender_realtime: Some(true),
+            last_update_days: Some(45),
+        });
+        plugin.state.snapshot = Some(snap);
+
+        let alerts = plugin.security_alerts();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].category, AlertCategory::WindowsUpdates);
+        assert!(alerts[0].message.contains("45 days"));
+    }
+
+    #[test]
+    fn security_alerts_all_healthy_no_alerts() {
+        let mut plugin = make_plugin();
+        let mut snap = make_snapshot();
+        snap.security = Some(models::WindowsSecurityStatus {
+            firewall_profiles: vec![
+                models::WindowsFirewallProfile { name: "Domain".into(), enabled: true },
+                models::WindowsFirewallProfile { name: "Private".into(), enabled: true },
+                models::WindowsFirewallProfile { name: "Public".into(), enabled: true },
+            ],
+            defender_enabled: Some(true),
+            defender_realtime: Some(true),
+            last_update_days: Some(5),
+        });
+        plugin.state.snapshot = Some(snap);
+
+        let alerts = plugin.security_alerts();
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn security_alerts_cooldown_dedup() {
+        let mut plugin = make_plugin();
+        let mut snap = make_snapshot();
+        snap.security = Some(models::WindowsSecurityStatus {
+            firewall_profiles: vec![
+                models::WindowsFirewallProfile { name: "Public".into(), enabled: false },
+            ],
+            defender_enabled: Some(true),
+            defender_realtime: Some(true),
+            last_update_days: None,
+        });
+        plugin.state.snapshot = Some(snap);
+
+        // First call: should fire
+        let alerts1 = plugin.security_alerts();
+        assert_eq!(alerts1.len(), 1);
+
+        // Second call within cooldown: should be suppressed
+        let alerts2 = plugin.security_alerts();
+        assert!(alerts2.is_empty());
     }
 
     #[test]

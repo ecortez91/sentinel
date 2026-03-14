@@ -36,6 +36,9 @@ pub enum AlertCategory {
     ThermalWarning,
     ThermalCritical,
     ThermalEmergency,
+    WindowsFirewall,
+    WindowsDefender,
+    WindowsUpdates,
 }
 
 impl fmt::Display for AlertCategory {
@@ -53,6 +56,9 @@ impl fmt::Display for AlertCategory {
             AlertCategory::ThermalWarning => write!(f, "THERMAL"),
             AlertCategory::ThermalCritical => write!(f, "THERMAL!"),
             AlertCategory::ThermalEmergency => write!(f, "THERMAL!!"),
+            AlertCategory::WindowsFirewall => write!(f, "W-FIREWALL"),
+            AlertCategory::WindowsDefender => write!(f, "W-DEFENDER"),
+            AlertCategory::WindowsUpdates => write!(f, "W-UPDATES"),
         }
     }
 }

@@ -87,6 +87,15 @@ impl PluginRegistry {
             plugin.tick();
         }
     }
+
+    /// Collect security alerts from all plugins.
+    pub fn collect_security_alerts(&mut self) -> Vec<crate::models::Alert> {
+        let mut alerts = Vec::new();
+        for plugin in &mut self.plugins {
+            alerts.extend(plugin.security_alerts());
+        }
+        alerts
+    }
 }
 
 #[cfg(test)]

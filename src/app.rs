@@ -2217,6 +2217,12 @@ impl App {
                 new_alerts.extend(thermal_alerts);
             }
 
+            // Check plugin security alerts (Windows Firewall, Defender, etc.)
+            {
+                let plugin_alerts = self.plugins.collect_security_alerts();
+                new_alerts.extend(plugin_alerts);
+            }
+
             // Record to event store
             if let Some(ref mut store) = self.event_store {
                 // System snapshot
