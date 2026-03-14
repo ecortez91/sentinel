@@ -28,13 +28,10 @@ const DEFAULT_BIND: &str = "0.0.0.0";
 /// Default listen port.
 const DEFAULT_PORT: u16 = 8086;
 
-/// Maximum processes to include by CPU usage.
-const MAX_TOP_BY_CPU: usize = 50;
-
-/// Maximum additional processes to include by memory usage.
-/// These are merged with the CPU set to ensure memory-heavy processes
-/// (like Vmmem, Chrome) always appear even when idle.
-const MAX_TOP_BY_MEMORY: usize = 20;
+/// Minimum memory threshold — skip processes using less than this (bytes).
+/// Filters out hundreds of tiny system services that clutter the view.
+/// 1 MB = 1,048,576 bytes.
+const MIN_PROCESS_MEMORY: u64 = 1_048_576;
 
 /// Maximum TCP connections to include in snapshot.
 const MAX_CONNECTIONS: usize = 50;
@@ -307,11 +304,13 @@ fn collect_snapshot(
             .or_insert_with(|| name.clone());
     }
 
-    // Collect all named processes
+    // Collect all processes with meaningful memory usage.
+    // Skip unnamed and tiny (<1MB) processes to avoid sending hundreds
+    // of idle system services that clutter the grouped view.
     let all_procs: Vec<ProcessInfo> = sys
         .processes()
         .values()
-        .filter(|p| !p.name().to_string_lossy().is_empty())
+        .filter(|p| !p.name().to_string_lossy().is_empty() && p.memory() >= MIN_PROCESS_MEMORY)
         .map(|p| ProcessInfo {
             pid: p.pid().as_u32(),
             name: p.name().to_string_lossy().to_string(),
@@ -322,35 +321,11 @@ fn collect_snapshot(
         })
         .collect();
 
-    // Merge top-by-CPU and top-by-memory to ensure both CPU-heavy and
-    // memory-heavy processes (Vmmem, Chrome) are always included.
-    let mut by_cpu = all_procs.clone();
-    by_cpu.sort_by(|a, b| {
-        b.cpu_pct
-            .partial_cmp(&a.cpu_pct)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    by_cpu.truncate(MAX_TOP_BY_CPU);
-
-    let mut by_mem = all_procs;
-    by_mem.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes));
-    by_mem.truncate(MAX_TOP_BY_MEMORY);
-
-    // Merge and dedup by PID
-    let mut seen = std::collections::HashSet::new();
-    let mut procs: Vec<ProcessInfo> = Vec::with_capacity(MAX_TOP_BY_CPU + MAX_TOP_BY_MEMORY);
-    for p in by_cpu.into_iter().chain(by_mem.into_iter()) {
-        if seen.insert(p.pid) {
-            procs.push(p);
-        }
-    }
-
-    // Final sort by CPU descending for display
-    procs.sort_by(|a, b| {
-        b.cpu_pct
-            .partial_cmp(&a.cpu_pct)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Send all processes — the JSON overhead is minimal for local HTTP
+    // and the TUI handles grouping/sorting/scrolling on its side.
+    // Sort by memory descending as the default (most useful for overview).
+    let mut procs = all_procs;
+    procs.sort_by(|a, b| b.memory_bytes.cmp(&a.memory_bytes));
 
     // Collect disk info
     let disks_info = sysinfo::Disks::new_with_refreshed_list();

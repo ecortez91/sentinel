@@ -171,10 +171,9 @@ pub const DEFAULT_AGENT_PORT: u16 = 8086;
 pub const DEFAULT_AGENT_POLL_SECS: u64 = 5;
 /// Environment variable: override agent snapshot URL entirely.
 pub const ENV_AGENT_URL: &str = "SENTINEL_AGENT_URL";
-/// Maximum processes by CPU included in agent snapshot.
-pub const AGENT_MAX_TOP_BY_CPU: usize = 50;
-/// Maximum additional processes by memory included in agent snapshot.
-pub const AGENT_MAX_TOP_BY_MEMORY: usize = 20;
+/// Minimum process memory (bytes) to include in agent snapshot.
+/// Processes below this threshold are skipped to reduce noise.
+pub const AGENT_MIN_PROCESS_MEMORY: u64 = 1_048_576; // 1 MB
 /// EMA smoothing factor for per-process CPU/RAM values (0.0–1.0).
 /// Higher = more responsive but jumpier. Lower = smoother but laggier.
 /// 0.3 means 30% new value + 70% old value — very smooth, converges
