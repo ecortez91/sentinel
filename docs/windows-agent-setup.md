@@ -135,11 +135,34 @@ cargo run --release --bin sentinel
 
 If the agent is reachable, a **Windows Host** tab will appear showing:
 
+- **Security status** — Firewall per profile (ON/OFF), Defender status, last update age
 - CPU usage and core count
 - Memory usage (used / total)
-- Top processes (by CPU)
+- Top processes (sortable by CPU/RAM/PID/Name — press `s`)
 - Disk usage per volume
+- Network interfaces with RX/TX counters
+- Active TCP connections (suspicious connections highlighted)
+- Listening ports with process mapping
+- Startup programs (registry autorun entries)
+- Logged-in users (with RDP session detection)
 - OS version and uptime
+
+### Security Alerts
+
+When Windows security issues are detected, they appear in the main **Alerts**
+tab (and Telegram notifications if configured):
+
+- Firewall profile OFF (Warning)
+- Windows Defender disabled (Danger)
+- Defender real-time protection OFF (Warning)
+- Windows updates stale >30 days (Warning)
+
+### AI Security Analysis
+
+Press `a` on the Windows Host tab to trigger an AI security assessment. The AI
+analyzes the full snapshot (system, connections, firewall, defender, startup
+programs, users) and provides actionable recommendations. This uses Haiku and
+is **manual only** — never automatic.
 
 ## API Reference
 
@@ -200,10 +223,25 @@ Returns agent health:
 | Agent crashes on start | Check if port 8086 is already in use: `netstat -an | findstr 8086` |
 | LHM port conflict | LHM defaults to 8085, agent to 8086 — no conflict by default |
 
+## Keyboard Shortcuts (Windows Host Tab)
+
+| Key | Action |
+|-----|--------|
+| `j`/`k` or `Up`/`Down` | Navigate process list |
+| `s` | Cycle sort field (CPU → RAM → PID → Name) |
+| `S` | Toggle sort direction (asc/desc) |
+| `f` | Focus/expand current panel |
+| `F` | Cycle between panels in focus mode |
+| `a` | AI security analysis (Haiku) |
+| `PgUp`/`PgDn` | Page through process list |
+| `Home`/`End` | Jump to first/last process |
+
 ## Security Notes
 
 - The agent serves **read-only** system metrics. It cannot execute commands or
   modify the system.
+- The agent runs shell commands (`netstat`, `netsh`, `powershell Get-*`,
+  `query user`) to collect security data — all are read-only queries.
 - By default it binds to `0.0.0.0` (all interfaces). Use `--bind 127.0.0.1`
   to restrict to localhost if the machine is on a shared network.
 - No authentication is required. If you need auth, run behind a reverse proxy.
