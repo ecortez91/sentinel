@@ -1005,41 +1005,38 @@ fn render_network_info(
 
 /// AI security analysis panel.
 fn render_ai_panel(frame: &mut Frame, area: Rect, state: &WindowsState, theme: &Theme) {
-    let title = if state.ai_loading {
-        " AI Security Analysis (streaming...) "
-    } else {
-        " AI Security Analysis [a: refresh] "
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(if state.ai_loading {
-            theme.accent
-        } else {
-            theme.border
-        }))
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if state.ai_loading && state.ai_analysis.is_none() {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                " Analyzing Windows host security...",
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::ITALIC),
-            )),
-            inner,
-        );
-        return;
-    }
+    let is_focused = state.focused_panel == Some(WindowsPanel::AiAnalysis);
 
     if let Some(ref analysis) = state.ai_analysis {
+        let total_lines = analysis.lines().count();
+        let title = if state.ai_loading {
+            " AI Security Analysis (streaming...) ".to_string()
+        } else if is_focused {
+            format!(
+                " AI Security Analysis [j/k:scroll a:refresh] ({}/{}) ",
+                state.ai_scroll + 1,
+                total_lines
+            )
+        } else {
+            " AI Security Analysis [f:expand a:refresh] ".to_string()
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if is_focused {
+                theme.accent
+            } else {
+                theme.border
+            }))
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
         let lines: Vec<Line> = analysis
             .lines()
             .skip(state.ai_scroll)
@@ -1053,10 +1050,40 @@ fn render_ai_panel(frame: &mut Frame, area: Rect, state: &WindowsState, theme: &
             .collect();
         frame.render_widget(Paragraph::new(lines), inner);
     } else {
+        let title = if state.ai_loading {
+            " AI Security Analysis (streaming...) "
+        } else {
+            " AI Security Analysis [a: analyze] "
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if state.ai_loading {
+                theme.accent
+            } else {
+                theme.border
+            }))
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let msg = if state.ai_loading {
+            " Analyzing Windows host security..."
+        } else {
+            " Press 'a' to analyze host security with AI"
+        };
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " Press 'a' to analyze host security with AI",
-                Style::default().fg(theme.text_muted),
+                msg,
+                Style::default().fg(if state.ai_loading {
+                    theme.accent
+                } else {
+                    theme.text_muted
+                }),
             )),
             inner,
         );

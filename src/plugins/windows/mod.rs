@@ -317,34 +317,66 @@ impl Plugin for WindowsPlugin {
                 self.state.cycle_panel_forward();
                 PluginAction::Consumed
             }
-            // Navigation
+            // Navigation — context-dependent: scroll AI when focused on AI panel
             KeyCode::Up | KeyCode::Char('k') => {
-                self.state.move_selection_up();
-                PluginAction::Consumed
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.state.move_selection_down();
-                PluginAction::Consumed
-            }
-            KeyCode::PageUp => {
-                for _ in 0..PAGE_SIZE {
+                if self.state.focused_panel == Some(state::WindowsPanel::AiAnalysis) {
+                    self.state.ai_scroll = self.state.ai_scroll.saturating_sub(1);
+                } else {
                     self.state.move_selection_up();
                 }
                 PluginAction::Consumed
             }
-            KeyCode::PageDown => {
-                for _ in 0..PAGE_SIZE {
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.state.focused_panel == Some(state::WindowsPanel::AiAnalysis) {
+                    let max_lines = self.state.ai_analysis.as_ref()
+                        .map(|a| a.lines().count().saturating_sub(1))
+                        .unwrap_or(0);
+                    if self.state.ai_scroll < max_lines {
+                        self.state.ai_scroll += 1;
+                    }
+                } else {
                     self.state.move_selection_down();
                 }
                 PluginAction::Consumed
             }
+            KeyCode::PageUp => {
+                if self.state.focused_panel == Some(state::WindowsPanel::AiAnalysis) {
+                    self.state.ai_scroll = self.state.ai_scroll.saturating_sub(PAGE_SIZE);
+                } else {
+                    for _ in 0..PAGE_SIZE {
+                        self.state.move_selection_up();
+                    }
+                }
+                PluginAction::Consumed
+            }
+            KeyCode::PageDown => {
+                if self.state.focused_panel == Some(state::WindowsPanel::AiAnalysis) {
+                    let max_lines = self.state.ai_analysis.as_ref()
+                        .map(|a| a.lines().count().saturating_sub(1))
+                        .unwrap_or(0);
+                    self.state.ai_scroll = (self.state.ai_scroll + PAGE_SIZE).min(max_lines);
+                } else {
+                    for _ in 0..PAGE_SIZE {
+                        self.state.move_selection_down();
+                    }
+                }
+                PluginAction::Consumed
+            }
             KeyCode::Home => {
-                self.state.selected_process = 0;
-                self.state.scroll_offset = 0;
+                if self.state.focused_panel == Some(state::WindowsPanel::AiAnalysis) {
+                    self.state.ai_scroll = 0;
+                } else {
+                    self.state.selected_process = 0;
+                    self.state.scroll_offset = 0;
+                }
                 PluginAction::Consumed
             }
             KeyCode::End => {
-                if let Some(ref snap) = self.state.snapshot {
+                if self.state.focused_panel == Some(state::WindowsPanel::AiAnalysis) {
+                    self.state.ai_scroll = self.state.ai_analysis.as_ref()
+                        .map(|a| a.lines().count().saturating_sub(1))
+                        .unwrap_or(0);
+                } else if let Some(ref snap) = self.state.snapshot {
                     self.state.selected_process =
                         snap.top_processes.len().saturating_sub(1);
                 }
