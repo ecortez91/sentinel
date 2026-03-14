@@ -166,13 +166,33 @@ pub const CANDLE_PRICE_LABEL_WIDTH: u16 = 12;
 /// Default sentinel-agent HTTP snapshot endpoint.
 pub const DEFAULT_AGENT_URL: &str = "http://localhost:8086/api/snapshot";
 /// Default sentinel-agent HTTP port.
-pub const DEFAULT_AGENT_PORT: u16 = 8085;
+pub const DEFAULT_AGENT_PORT: u16 = 8086;
 /// Default polling interval for the Windows host agent (seconds).
 pub const DEFAULT_AGENT_POLL_SECS: u64 = 5;
 /// Environment variable: override agent snapshot URL entirely.
 pub const ENV_AGENT_URL: &str = "SENTINEL_AGENT_URL";
 /// Maximum top processes returned by the agent snapshot.
 pub const AGENT_MAX_TOP_PROCESSES: usize = 30;
+/// Timeout for agent shell commands (seconds).
+pub const AGENT_CMD_TIMEOUT_SECS: u64 = 3;
+/// Maximum TCP connections to include in snapshot.
+pub const AGENT_MAX_CONNECTIONS: usize = 50;
+/// Maximum startup programs to include in snapshot.
+pub const AGENT_MAX_STARTUP_ENTRIES: usize = 30;
+/// Maximum logged-in user sessions to include.
+pub const AGENT_MAX_USERS: usize = 10;
+/// Standard/safe TCP ports (not flagged as suspicious).
+pub const STANDARD_PORTS: &[u16] = &[80, 443, 53, 22, 8080, 8443, 3306, 5432, 6379, 27017, 8086];
+/// Threshold for "stale Windows updates" alert (days).
+pub const WINDOWS_UPDATE_STALE_DAYS: u64 = 30;
+
+// ── Windows Security Score Penalties ──────────────────────────────
+/// Score penalty when a Windows Firewall profile is disabled.
+pub const SCORE_PENALTY_FIREWALL_OFF: u8 = 15;
+/// Score penalty when Windows Defender is disabled.
+pub const SCORE_PENALTY_DEFENDER_OFF: u8 = 20;
+/// Score penalty when Windows updates are stale.
+pub const SCORE_PENALTY_UPDATES_STALE: u8 = 10;
 
 // ── Email Notifications ───────────────────────────────────────────
 /// Minimum interval between emails of the same event type (seconds).
