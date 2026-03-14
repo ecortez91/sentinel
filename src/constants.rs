@@ -175,6 +175,10 @@ pub const ENV_AGENT_URL: &str = "SENTINEL_AGENT_URL";
 pub const AGENT_MAX_TOP_BY_CPU: usize = 50;
 /// Maximum additional processes by memory included in agent snapshot.
 pub const AGENT_MAX_TOP_BY_MEMORY: usize = 20;
+/// EMA smoothing factor for per-process CPU/RAM values (0.0–1.0).
+/// Higher = more responsive but jumpier. Lower = smoother but laggier.
+/// 0.4 means 40% new value + 60% old value.
+pub const AGENT_PROCESS_SMOOTHING_FACTOR: f32 = 0.4;
 /// Timeout for agent shell commands (seconds).
 pub const AGENT_CMD_TIMEOUT_SECS: u64 = 3;
 /// Maximum TCP connections to include in snapshot.

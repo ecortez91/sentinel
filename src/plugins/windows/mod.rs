@@ -15,7 +15,10 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{layout::Rect, Frame};
 use tokio::sync::mpsc;
 
-use crate::constants::{ALERT_COOLDOWN_SECS, ENV_AGENT_URL, PAGE_SIZE, WINDOWS_UPDATE_STALE_DAYS};
+use crate::constants::{
+    AGENT_PROCESS_SMOOTHING_FACTOR, ALERT_COOLDOWN_SECS, ENV_AGENT_URL, PAGE_SIZE,
+    WINDOWS_UPDATE_STALE_DAYS,
+};
 use crate::models::{Alert, AlertCategory, AlertSeverity};
 use crate::plugins::{Plugin, PluginAction};
 use crate::ui::glyphs::Glyphs;
@@ -265,7 +268,27 @@ impl Plugin for WindowsPlugin {
         // Drain the poll channel
         while let Ok(result) = self.poll_rx.try_recv() {
             match result {
-                AgentPollResult::Data(snapshot) => {
+                AgentPollResult::Data(mut snapshot) => {
+                    // Smooth per-process CPU and RAM values using EMA to
+                    // prevent the display from jumping on every poll cycle.
+                    if let Some(ref prev) = self.state.snapshot {
+                        let prev_by_pid: HashMap<u32, (f32, u64)> = prev
+                            .top_processes
+                            .iter()
+                            .map(|p| (p.pid, (p.cpu_pct, p.memory_bytes)))
+                            .collect();
+                        let alpha = AGENT_PROCESS_SMOOTHING_FACTOR;
+                        for proc in &mut snapshot.top_processes {
+                            if let Some(&(old_cpu, old_mem)) = prev_by_pid.get(&proc.pid) {
+                                proc.cpu_pct =
+                                    alpha * proc.cpu_pct + (1.0 - alpha) * old_cpu;
+                                proc.memory_bytes = (alpha as f64
+                                    * proc.memory_bytes as f64
+                                    + (1.0 - alpha as f64) * old_mem as f64)
+                                    as u64;
+                            }
+                        }
+                    }
                     self.state.snapshot = Some(snapshot);
                     self.state.loading = false;
                     self.state.error = None;
