@@ -2297,12 +2297,10 @@ impl App {
                 }
             }
 
-            // Send alerts to Telegram (severity-filtered + rate-limited)
+            // Send alerts to Telegram (grouped by parent app, severity-filtered + rate-limited)
             if let Some(ref mut tg) = self.telegram_notifier {
                 let hostname = gethostname();
-                for alert in &new_alerts {
-                    tg.send_alert(alert, &hostname);
-                }
+                tg.send_grouped_alerts(&new_alerts, &processes, &hostname, None);
             }
 
             self.state.update(system, processes, new_alerts);

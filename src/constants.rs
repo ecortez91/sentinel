@@ -65,6 +65,9 @@ pub const MAX_FD_SAMPLE: usize = 20;
 pub const MAX_ENV_VARS: usize = 50;
 /// Maximum tree depth guard to prevent infinite recursion.
 pub const MAX_TREE_DEPTH: usize = 20;
+/// Maximum hops to walk up the parent_pid chain when resolving the real
+/// application name for alert grouping (e.g. tokio-rt-worker → node).
+pub const MAX_PARENT_WALK_DEPTH: usize = 4;
 
 // ── Memory Thresholds ─────────────────────────────────────────────
 /// 1 GiB in bytes.
@@ -234,6 +237,11 @@ pub const ENV_TELEGRAM_CHAT_ID: &str = "SENTINEL_TELEGRAM_CHAT_ID";
 pub const DEFAULT_TELEGRAM_DIGEST_SECS: u64 = 0;
 /// Maximum alerts batched per digest message.
 pub const TELEGRAM_DIGEST_MAX_ALERTS: usize = 20;
+/// Maximum worker entries shown in a grouped alert before truncation.
+pub const MAX_WORKER_DISPLAY: usize = 8;
+/// Multiplier threshold for "What's happening" severity descriptions.
+/// If combined usage exceeds threshold * this factor, it's considered "extreme".
+pub const WORKER_EXTREME_MULTIPLIER: f64 = 3.0;
 
 // ── Security Dashboard ────────────────────────────────────────────
 /// Security data refresh interval (ticks). At 1s/tick this is ~5s.
