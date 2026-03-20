@@ -4,6 +4,7 @@
 //! Extracts the event loop from `main()` into a testable, well-structured unit.
 
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -123,6 +124,7 @@ pub struct App {
 
     // Thermal monitoring (LHM)
     thermal_rx: mpsc::UnboundedReceiver<Option<crate::thermal::ThermalSnapshot>>,
+    thermal_reload: Arc<tokio::sync::Notify>,
 
     // Email notifications
     email_notifier: Option<EmailNotifier>,
@@ -252,8 +254,10 @@ impl App {
 
         // Thermal monitoring (LHM HTTP polling)
         let (thermal_tx, thermal_rx) = mpsc::unbounded_channel();
+        let thermal_reload = Arc::new(tokio::sync::Notify::new());
         {
             let tx = thermal_tx;
+            let notify = Arc::clone(&thermal_reload);
             let lhm_url = crate::thermal::resolve_lhm_url(&config.thermal.lhm_url);
             let lhm_auth = crate::thermal::LhmAuth::from_config_or_env(&config.thermal);
             let poll_secs = config.thermal.poll_interval_secs;
@@ -265,7 +269,10 @@ impl App {
                     if tx.send(snapshot).is_err() {
                         break;
                     }
-                    tokio::time::sleep(Duration::from_secs(poll_secs)).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(poll_secs)) => {}
+                        _ = notify.notified() => {}
+                    }
                 }
             });
         }
@@ -358,6 +365,7 @@ impl App {
             event_store,
             net_scan_interval: 10, // scan network sockets every ~10 ticks
             thermal_rx,
+            thermal_reload,
             email_notifier,
             telegram_notifier,
             plugins,
@@ -1220,6 +1228,10 @@ impl App {
             KeyCode::Char('h') if self.state.active_tab == Tab::Security => {
                 let prev = self.state.security.focused_panel.prev();
                 self.state.security.focus_panel(prev);
+            }
+            KeyCode::Char('r') if self.state.active_tab == Tab::Thermal => {
+                self.thermal_reload.notify_one();
+                self.state.set_status("Thermal data reload requested".into());
             }
             KeyCode::Char('r') if self.state.active_tab == Tab::Security => {
                 self.tick_security();

@@ -274,6 +274,37 @@ fn get_process_memory(_pid: u32, fallback: u64) -> u64 {
     fallback
 }
 
+// ── Linux thread filtering ───────────────────────────────────────
+
+/// On Linux, check if a PID is a thread (not the thread-group leader).
+///
+/// Reads `/proc/{pid}/status` and compares `Tgid` (thread group ID) to the PID.
+/// If `Tgid != pid`, this entry is a thread sharing its parent's address space —
+/// `sysinfo` reports the full process RSS for each thread, causing inflated memory
+/// totals when threads are summed in alert grouping.
+#[cfg(target_os = "linux")]
+fn is_thread(pid: u32) -> bool {
+    let path = format!("/proc/{pid}/status");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return false, // Process may have exited; treat as non-thread
+    };
+    for line in contents.lines() {
+        if let Some(tgid_str) = line.strip_prefix("Tgid:") {
+            if let Ok(tgid) = tgid_str.trim().parse::<u32>() {
+                return tgid != pid;
+            }
+        }
+    }
+    false
+}
+
+/// On non-Linux platforms, all PIDs are process leaders (never threads).
+#[cfg(not(target_os = "linux"))]
+fn is_thread(_pid: u32) -> bool {
+    false
+}
+
 // ── System collection ────────────────────────────────────────────
 
 fn collect_snapshot(
@@ -307,10 +338,16 @@ fn collect_snapshot(
     // Collect all processes with meaningful memory usage.
     // Skip unnamed and tiny (<1MB) processes to avoid sending hundreds
     // of idle system services that clutter the grouped view.
+    // On Linux, skip threads (Tgid != PID) — they share the parent's RSS
+    // and would cause inflated memory totals when grouped for alerts.
     let all_procs: Vec<ProcessInfo> = sys
         .processes()
         .values()
-        .filter(|p| !p.name().to_string_lossy().is_empty() && p.memory() >= MIN_PROCESS_MEMORY)
+        .filter(|p| {
+            !p.name().to_string_lossy().is_empty()
+                && p.memory() >= MIN_PROCESS_MEMORY
+                && !is_thread(p.pid().as_u32())
+        })
         .map(|p| ProcessInfo {
             pid: p.pid().as_u32(),
             name: p.name().to_string_lossy().to_string(),
@@ -776,6 +813,9 @@ const SERVICE_DESCRIPTION: &str =
 /// Restart delay on crash (milliseconds).
 #[allow(dead_code)]
 const FAILURE_RESTART_MS: u32 = 5000;
+/// Windows Firewall rule name (used for install/uninstall).
+#[allow(dead_code)]
+const FIREWALL_RULE_NAME: &str = "Sentinel Agent";
 
 // ── Argument parsing ─────────────────────────────────────────────
 
@@ -1027,6 +1067,22 @@ mod service {
             ],
         );
 
+        // Allow inbound TCP on the agent port (WSL2 needs this to reach the host)
+        let _ = run_command(
+            "netsh",
+            &[
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                &format!("name={}", FIREWALL_RULE_NAME),
+                "dir=in",
+                "action=allow",
+                "protocol=TCP",
+                &format!("localport={}", DEFAULT_PORT),
+            ],
+        );
+
         // Start the service
         match service.start::<OsString>(&[]) {
             Ok(()) => eprintln!("Service started."),
@@ -1038,6 +1094,7 @@ mod service {
         eprintln!("  Binary:  {}", target_exe.display());
         eprintln!("  Service: {} ({})", SERVICE_NAME, SERVICE_DISPLAY_NAME);
         eprintln!("  Status:  Auto-start on boot, auto-restart on crash");
+        eprintln!("  Firewall: TCP {} allowed inbound", DEFAULT_PORT);
         eprintln!();
         eprintln!("Manage with:");
         eprintln!("  sc stop {}     — stop the service", SERVICE_NAME);
@@ -1090,6 +1147,18 @@ mod service {
                 }
             }
         }
+
+        // Remove the firewall rule
+        let _ = run_command(
+            "netsh",
+            &[
+                "advfirewall",
+                "firewall",
+                "delete",
+                "rule",
+                &format!("name={}", FIREWALL_RULE_NAME),
+            ],
+        );
 
         eprintln!("Sentinel Agent uninstalled.");
     }
@@ -1487,5 +1556,39 @@ Location : HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run
             bind: String::new(),
             port: 0,
         };
+    }
+
+    // ── is_thread tests ──────────────────────────────────────────
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn is_thread_returns_false_for_current_process() {
+        // PID 1 (init) and our own process are always thread-group leaders.
+        let my_pid = std::process::id();
+        assert!(!is_thread(my_pid), "current process should not be a thread");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn is_thread_returns_false_for_nonexistent_pid() {
+        // A PID that almost certainly doesn't exist should return false
+        // (graceful fallback when /proc/{pid}/status is unreadable).
+        assert!(!is_thread(u32::MAX));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn is_thread_returns_false_for_pid_1() {
+        // PID 1 (init/systemd) is always a thread-group leader.
+        assert!(!is_thread(1));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn is_thread_always_false_on_non_linux() {
+        // On Windows/macOS, is_thread is a no-op that always returns false.
+        assert!(!is_thread(1));
+        assert!(!is_thread(std::process::id()));
+        assert!(!is_thread(u32::MAX));
     }
 }

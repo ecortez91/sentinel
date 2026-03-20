@@ -90,6 +90,8 @@ pub fn render_status_bar_with_plugins(
             spans.push(dim(" Clear "));
         }
         Tab::Thermal => {
+            spans.push(badge("r", t.accent_secondary));
+            spans.push(dim(" Reload "));
             spans.push(badge(":", t.accent_secondary));
             spans.push(dim(" thermal "));
             spans.push(badge("Ctrl+X", t.warning));

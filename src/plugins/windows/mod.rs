@@ -9,6 +9,7 @@ pub mod renderer;
 pub mod state;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
@@ -50,6 +51,8 @@ pub struct WindowsPlugin {
     poll_interval_secs: u64,
     /// Whether the plugin is enabled.
     enabled: bool,
+    /// Signal to wake the poller for an immediate retry.
+    reload: Arc<tokio::sync::Notify>,
     /// Alert cooldowns keyed by (pseudo_pid, category) to prevent duplicates.
     alert_cooldowns: HashMap<(u32, AlertCategory), Instant>,
 }
@@ -70,6 +73,7 @@ impl WindowsPlugin {
             agent_url,
             poll_interval_secs,
             enabled,
+            reload: Arc::new(tokio::sync::Notify::new()),
             alert_cooldowns: HashMap::new(),
         }
     }
@@ -201,6 +205,7 @@ impl WindowsPlugin {
         self.poller_spawned = true;
 
         let tx = self.poll_tx.clone();
+        let notify = Arc::clone(&self.reload);
         let url = self.resolve_agent_url();
         let interval = self.poll_interval_secs;
 
@@ -242,7 +247,10 @@ impl WindowsPlugin {
                     }
                 }
 
-                tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {}
+                    _ = notify.notified() => {}
+                }
             }
         });
     }
@@ -344,6 +352,11 @@ impl Plugin for WindowsPlugin {
                 }
                 PluginAction::Consumed
             }
+            // Reload agent data
+            KeyCode::Char('r') => {
+                self.reload.notify_one();
+                return PluginAction::SetStatus("Windows agent reload requested".into());
+            }
             // Sort controls
             KeyCode::Char('s') => {
                 self.state.cycle_sort();
@@ -437,6 +450,7 @@ impl Plugin for WindowsPlugin {
 
     fn status_bar_hints(&self) -> Vec<(&str, &str)> {
         vec![
+            ("r", "Reload"),
             ("j/k", "Navigate"),
             ("g", "Group/Flat"),
             ("s", "Sort"),
@@ -447,6 +461,7 @@ impl Plugin for WindowsPlugin {
 
     fn help_entries(&self) -> Vec<(&str, &str)> {
         vec![
+            ("r", "Reload agent data"),
             ("j / Up", "Move selection up"),
             ("k / Down", "Move selection down"),
             ("g", "Toggle Grouped/Flat view"),
